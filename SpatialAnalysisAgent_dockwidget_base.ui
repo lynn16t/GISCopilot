@@ -912,36 +912,6 @@ QToolButton:pressed {
                 <pointsize>8</pointsize>
                </font>
               </property>
-              <item>
-               <property name="text">
-                <string>gpt-5.2</string>
-               </property>
-              </item>
-              <item>
-               <property name="text">
-                <string>gpt-5.1</string>
-               </property>
-              </item>
-              <item>
-               <property name="text">
-                <string>gpt-5</string>
-               </property>
-              </item>
-              <item>
-               <property name="text">
-                <string>gpt-4o</string>
-               </property>
-              </item>
-              <item>
-               <property name="text">
-                <string>gpt-4</string>
-               </property>
-              </item>
-              <item>
-               <property name="text">
-                <string>gpt-4o-mini</string>
-               </property>
-              </item>
              </widget>
             </item>
            </layout>
@@ -1228,6 +1198,22 @@ QToolButton:pressed {
            </widget>
           </item>
          </layout>
+        </item>
+        <item row="1" column="0">
+         <widget class="QLabel" name="provider_status_label">
+          <property name="font">
+           <font>
+            <family>Nirmala UI</family>
+            <pointsize>9</pointsize>
+           </font>
+          </property>
+          <property name="text">
+           <string>&lt;html&gt;&lt;head/&gt;&lt;body&gt;&lt;p&gt;&lt;span style=&quot; font-style:italic; color:#888888;&quot;&gt;⏳ 请输入 API Key&lt;/span&gt;&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;</string>
+          </property>
+          <property name="wordWrap">
+           <bool>true</bool>
+          </property>
+         </widget>
         </item>
         <item row="12" column="0">
          <layout class="QHBoxLayout" name="horizontalLayout_4">

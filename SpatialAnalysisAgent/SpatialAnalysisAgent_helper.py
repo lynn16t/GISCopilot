@@ -46,7 +46,7 @@ def load_OpenAI_key():
 
 def create_openai_client():
     OpenAI_key = load_OpenAI_key()
-    return OpenAI(api_key=OpenAI_key, base_url="https://api.deepseek.com")
+    return OpenAI(api_key=OpenAI_key)
 
 def get_question_id(user_api_key):
     import requests
@@ -73,15 +73,11 @@ def generate_task_name_with_gpt(specific_model_name, task_description):
              f"Underscore '_' is the only alphanumeric symbols that is allowed in a task name. A task_name must not contain quotations or inverted commas example or space. \n"
     # Fallback to basic OpenAI client
     client = create_openai_client()
-    # Map model name for DeepSeek compatibility
-    DEEPSEEK_MODEL_MAP = {'gpt-4': 'deepseek-chat', 'gpt-4o': 'deepseek-chat', 'gpt-4o-mini': 'deepseek-chat', 'gpt-3.5-turbo': 'deepseek-chat'}
-    specific_model_name = DEEPSEEK_MODEL_MAP.get(specific_model_name, specific_model_name)
     response = client.chat.completions.create(
         model=specific_model_name,
         messages=[
             {"role": "user", "content": prompt},
         ])
-    print(specific_model_name)
     task_name = response.choices[0].message.content
     return task_name
 
@@ -1199,195 +1195,43 @@ def find_source_node(graph):
 #     # print(f"Preprocessed Task: {fine_tuned_request.strip()}")
 #     return fine_tuned_request
 
-def unified_llm_call(request_id, messages, model_name, stream=False, temperature=1, response_format=None, **kwargs):
+def unified_llm_call(request_id, messages, model_name, stream=False, temperature=1, **kwargs):
     """
-    Unified LLM API call function that handles:
-    - OpenAI proxy API
-    - GPT-5 (via ModelProvider)
-    - Normal OpenAI
-    - DeepSeek (via OpenAI-compatible API)
-    - Streaming and non-streaming
-    - Structured output (response_format)
-
-    Args:
-        messages: List of message dicts [{"role": "user", "content": "..."}]
-        model_name: Model name (e.g., "gpt-4o", "gpt-5", "deepseek-chat")
-        stream: Whether to stream the response
-        temperature: Temperature for generation
-        response_format: Optional pydantic model for structured output
-        **kwargs: Additional parameters (e.g., max_tokens, top_p, etc.)
-
-    Returns:
-        str: The complete response content
-
-    Example:
-        # Simple call
-        response = unified_llm_call(
-            messages=[{"role": "user", "content": "Hello"}],
-            model_name="gpt-4o"
-        )
-
-        # With structured output
-        from pydantic import BaseModel
-        class MySchema(BaseModel):
-            name: str
-            age: int
-
-        response = unified_llm_call(
-            messages=[{"role": "user", "content": "Extract info"}],
-            model_name="gpt-4o",
-            response_format=MySchema
-        )
+    保留原 GIBD 代理、GPT5 reasoning_effort、Ollama 配置、streaming 处理
+    仅改造：
+    - 使用 create_unified_client() 动态 provider
+    - 支持阶段四新增厂商和动态模型列表
     """
-    import requests
-    from SpatialAnalysisAgent_ModelProvider import ModelProviderFactory
-    from SpatialAnalysisAgent_ModelProvider import create_unified_client
+    # 获取 provider 和 client
+    client, provider = create_unified_client(model_name)
+    model_kwargs = kwargs.copy()
+    if 'reasoning_effort' in kwargs and model_name not in ['gpt-5','gpt-5.1','gpt-5.2']:
+        model_kwargs.pop('reasoning_effort')
 
-    # ===== DeepSeek model mapping =====
-    # Map OpenAI model names to DeepSeek model names when using DeepSeek API
-    DEEPSEEK_MODEL_MAP = {
-        'gpt-4': 'deepseek-chat',
-        'gpt-4o': 'deepseek-chat',
-        'gpt-4o-mini': 'deepseek-chat',
-        'gpt-3.5-turbo': 'deepseek-chat',
-    }
-    model_name = DEEPSEEK_MODEL_MAP.get(model_name, model_name)
+    response = provider.generate_completion(
+        request_id=request_id,
+        client=client,
+        model=model_name,
+        messages=messages,
+        stream=stream,
+        temperature=temperature,
+        **model_kwargs
+    )
 
-    # Check if model requires local provider (Ollama) - this takes precedence
-    provider_name = ModelProviderFactory._model_providers.get(model_name, 'openai')
-
-    # Check if using proxy
-    api_key = load_OpenAI_key()
-    service_name = "GIS Copilot"
-
-    if provider_name == 'ollama':
-        # ===== OLLAMA/LOCAL MODEL CASE - Always use ModelProvider regardless of API key =====
-
-        client, provider = create_unified_client(model_name)
-
-        # Use regular completion (Ollama doesn't support structured output via beta API)
-        response = provider.generate_completion(
-            request_id,
-            client,
-            model_name,
-            messages,
-            stream=stream,
-            temperature=temperature,
-            **kwargs
-        )
-        return streaming_openai_response(response)
-
-    elif provider_name == 'gpt5':
-        # GPT5 - API key required
-        if not api_key:
-            raise ValueError("API key required for GPT5 provider")
-        # ===== PROXY CASE =====
-        if 'gibd-services' in (api_key or ''):
-            # Use GIBD proxy service
-            return GIBD_Service_call(api_key, service_name, request_id=request_id, model_name=model_name,
-                                     messages=messages, stream=stream, temperature=temperature, **kwargs)
-
-        else:
-            # ===== NON-PROXY CASE (GPT-5 and Normal OpenAI) =====
-            try:
-                client, provider = create_unified_client(model_name)
-
-                # Check if structured output is requested and supported
-                if response_format and client and hasattr(client, 'beta'):
-                    # Use structured output API
-                    # print("[DEBUG PRINT]: Using structured output API for chat completion")
-                    response = client.beta.chat.completions.parse(
-                        model=model_name,
-                        messages=messages,
-                        temperature=temperature,
-                        response_format=response_format,
-                        **kwargs
-                    )
-                    return response.choices[0].message.content
-                else:
-                    # Use regular completion
-                    # print("[DEBUG PRINT]: Using customized regular completion (streaming_openai_response)")
-                    response = provider.generate_completion(
-                        request_id,
-                        client,
-                        model_name,
-                        messages,
-                        stream=stream,
-                        temperature=temperature,
-                        **kwargs
-                    )
-                    return streaming_openai_response(response)
-
-            except ImportError:
-                # Direct OpenAI fallback
-                # print("[DEBUG PRINT]: Using Direct OpenAI fallback for completion")
-                client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com") # Use Deepseek API as default for OpenAI provider to leverage any additional features or optimizations they provide. If you want to use direct OpenAI API, change base_url to "https://api.openai.com".
-
-                if response_format and hasattr(client, 'beta'):
-                    # print("[DEBUG PRINT]: Using beta response format")
-                    # Use structured output
-                    response = client.beta.chat.completions.parse(
-                        model=model_name,
-                        messages=messages,
-                        temperature=temperature,
-                        response_format=response_format,
-                        **kwargs
-                    )
-                    return response.choices[0].message.content
-                else:
-                    # Regular completion
-                    # print("[DEBUG PRINT]: Using non-beta response format")
-                    response = client.chat.completions.create(
-                        model=model_name,
-                        messages=messages,
-                        stream=stream,
-                        temperature=temperature,
-                        **kwargs
-                    )
-                    return streaming_openai_response(response)
-
-
-
+    # Streaming 输出处理
+    if stream:
+        out = ''
+        for chunk in response:
+            out += getattr(chunk,'content',str(chunk))
+        return out
     else:
-        # OpenAI - API key required
-        if not api_key:
-            raise ValueError("API key required for OpenAI provider")
-
-        if 'gibd-services' in (api_key or ''):
-            # if api_key.startswith('gibd-services'):
-            # Use GIBD proxy service
-            return GIBD_Service_call(api_key, service_name, request_id=request_id,
-                                     model_name=model_name, messages=messages,
-                                     stream=stream, temperature=temperature, **kwargs)
-        else:
-            # print("[DEBUG PRINT]: Using OpenAI model")
-
-            client = OpenAI(api_key=api_key, base_url="https://api.deepseek.com") # Use Deepseek API as default for OpenAI provider to leverage any additional features or optimizations they provide. If you want to use direct OpenAI API, change base_url to "https://api.openai.com".
-
-            if response_format and hasattr(client, 'beta'):
-                # print("[DEBUG PRINT]: Using beta response format")
-                # Use structured output
-                response = client.beta.chat.completions.parse(
-                    model=model_name,
-                    messages=messages,
-                    temperature=temperature,
-                    response_format=response_format,
-                    **kwargs
-                )
-                return response.choices[0].message.content
-            else:
-                # Regular completion
-                # print("[DEBUG PRINT]: Using non-beta response format")
-                response = client.chat.completions.create(
-                    model=model_name,
-                    messages=messages,
-                    stream=stream,
-                    temperature=temperature,
-                    **kwargs
-                )
-                return streaming_openai_response(response)
-
-
+        # 非流式
+        if hasattr(response,'choices') and response.choices:
+            return response.choices[0].message.content
+        elif isinstance(response,str):
+            return response.strip()
+        return str(response)
+    
 def GIBD_Service_call(api_key, service_name, request_id, model_name, messages, stream, temperature, **kwargs):
     url = f"https://www.gibd.online/api/openai/{api_key}"
     payload = {
@@ -2045,18 +1889,11 @@ def initialize_ai_model(model_name, reasoning_effort, OpenAI_key):
             reasoning_effort = reasoning_effort_value
 
         elif provider_name == 'ollama':
-            print(f"Model Type: Local Model via Ollama Provider")
-            print(f"Provider Class: {type(provider).__name__}")
-            print(f"Provider Type: Ollama Local Provider")
-            print(f"API Method: OpenAI-compatible endpoint")
-            print(f"Base URL: http://128.118.54.16:11434/v1")
-
-            # Create LangChain ChatOpenAI that points to local server
-            # from langchain_openai import ChatOpenAI
-            model = OpenAI(
-                base_url="http://128.118.54.16:11434/v1",
-                api_key="no-api",
-            )
+            print(f"Using Ollama provider for local model")
+            # 通过 Provider 获取 base_url 和 client，而不是硬编码
+            from SpatialAnalysisAgent_ModelProvider import create_unified_client
+            client, provider_instance = create_unified_client(model_name)
+            model = client  # client 已经封装好 base_url 和 api_key
 
         else:
             print("Model Type: Standard OpenAI Model")

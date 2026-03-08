@@ -5,9 +5,24 @@ Supports multiple AI model providers including OpenAI, local models, and open-so
 
 import os
 import sys
+import requests
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 import configparser
+
+#模型支持   
+PROVIDER_MODELS = {
+    "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-5", "gpt-5.1", "o1", "o3-mini"],
+    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "anthropic": ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"],
+    "gemini": ["gemini-2.5-pro", "gemini-2.5-flash"],
+    "gibd": ["gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-5", "gpt-5.1", "o1", "o3-mini"],
+    "minimax": ["MiniMax-Text-01", "abab6.5s-chat"],
+    "ollama": [],  # 动态获取本地模型
+    "glm": ["glm-130b", "glm-6b"],
+    "qwen": ["qwen-32b", "qwen-14b"],
+}
+
 
 # Add current directory to path
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -35,28 +50,21 @@ class ModelProvider(ABC):
 
 
 class OpenAIProvider(ModelProvider):
-    """OpenAI API provider for GPT models"""
-
-    def __init__(self):
-        self.api_key = None
-        self.base_url = None
-
+    """OpenAI Provider 保留原有逻辑"""
 
     def create_client(self, config: Dict[str, Any]):
         from openai import OpenAI
-        self.api_key = (config.get('api_key') or '').strip()
-        self.base_url = None
-        if 'gibd-services' in self.api_key:
-            self.base_url = f"https://www.gibd.online/api/openai/{self.api_key}"
+        api_key = config.get('api_key') or ''
+        if 'gibd-services' in api_key:
+            base_url = f"https://www.gibd.online/api/openai/{api_key}"
             client = None
         else:
-            # Use DeepSeek API as default (OpenAI-compatible, cheaper and accessible in China)
-            # To switch back to OpenAI, change base_url to "https://api.openai.com/v1"
-            client = OpenAI(api_key=self.api_key, base_url="https://api.deepseek.com")
-
+           # 仅改造 default base_url 指向真实 OpenAI（阶段四改造要求）
+            base_url = config.get('base_url', 'https://api.openai.com/v1')
+            client = OpenAI(api_key=api_key, base_url=base_url)
+        self.api_key = api_key
+        self.base_url = base_url
         return client
-
-        # return OpenAI(api_key=config.get('api_key'))
     
     def generate_completion(self, request_id, client, model: str, messages: List[Dict], **kwargs):
         import requests, json
@@ -194,8 +202,30 @@ class OllamaProvider(ModelProvider):
         # For Ollama, we just need the base URL to be reachable
         return True  # Simplified validation
 
+# 新增
+class DeepSeekProvider(OpenAIProvider):
+    """DeepSeek Provider 兼容 OpenAI协议"""
+    def create_client(self, config):
+        from openai import OpenAI
+        api_key = config.get('api_key')
+        return OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
 
-# Removed HuggingFace provider - not needed for gpt-oss-20b
+# 新增
+class AnthropicProvider(ModelProvider):
+    def create_client(self, config):
+        raise NotImplementedError("Anthropic provider will be implemented in Phase 5")
+    def generate_completion(self, request_id, client, model, messages, **kwargs):
+        raise NotImplementedError()
+    def validate_config(self, config):
+        return 'api_key' in config and config['api_key'].startswith('sk-ant-')
+
+class GeminiProvider(ModelProvider):
+    def create_client(self, config):
+        raise NotImplementedError("Gemini provider will be implemented in Phase 5")
+    def generate_completion(self, request_id, client, model, messages, **kwargs):
+        raise NotImplementedError()
+    def validate_config(self, config):
+        return 'api_key' in config and config['api_key'].startswith('AIza')   
 
 class GPT5Provider(ModelProvider):
     """Specialized provider for GPT-5 and GPT-5.1 with different API structure"""
@@ -395,35 +425,33 @@ class GPT5Provider(ModelProvider):
     def validate_config(self, config: Dict[str, Any]) -> bool:
         return 'api_key' in config and config['api_key'].strip() != ''
 
-
-
-
-
-
-
 class ModelProviderFactory:
-    """Factory to create appropriate model providers"""
-    
     _providers = {
         'openai': OpenAIProvider(),
+        'deepseek': DeepSeekProvider(),
+        'anthropic': AnthropicProvider(),
+        'gemini': GeminiProvider(),
         'ollama': OllamaProvider(),
         'gpt5': GPT5Provider(),
+        'gibd': OpenAIProvider(),
+        'glm': OllamaProvider(),
+        'qwen': OllamaProvider(),
     }
-    
-    # Model to provider mapping
+    _active_provider = None
+
     _model_providers = {
         'gpt-4': 'openai',
         'gpt-4o': 'openai',
         'gpt-4o-mini': 'openai',
         'gpt-5': 'gpt5',
         'gpt-5.1': 'gpt5',
+        'gpt-5.2': 'gpt5',
         'o1': 'openai',
         'o1-mini': 'openai',
         'o3-mini': 'openai',
-        'deepseek-chat': 'openai',
-        'deepseek-reasoner': 'openai',
-        'gpt-oss-20b': 'ollama',  # Default to Ollama for local inference
-        # Local server models
+        'deepseek-chat': 'deepseek',
+        'deepseek-reasoner': 'deepseek',
+        'gpt-oss-20b': 'ollama',
         'llama3.1:70b': 'ollama',
         'llama4:latest': 'ollama',
         'qwen3:32b': 'ollama',
@@ -436,21 +464,49 @@ class ModelProviderFactory:
     }
     
     @classmethod
-    def get_provider(cls, model: str) -> ModelProvider:
-        """Get the appropriate provider for a model"""
-        provider_name = cls._model_providers.get(model, 'openai')  # Default to OpenAI
-        return cls._providers[provider_name]
-    
-    @classmethod
-    def register_model(cls, model: str, provider: str):
-        """Register a model with a specific provider"""
-        cls._model_providers[model] = provider
-    
-    @classmethod
-    def get_available_providers(cls) -> List[str]:
-        """Get list of available providers"""
-        return list(cls._providers.keys())
+    def set_active_provider(cls, provider_name: str):
+        cls._active_provider = provider_name
 
+    @classmethod
+    def _is_ollama_model(cls, model: str) -> bool:
+        return model.lower() in ['gpt-oss-20b','llama3.1:70b','llama4:latest','qwen-32b','qwen-14b','glm-130b','glm-6b']
+
+    @classmethod
+    def get_provider(cls, model: str) -> ModelProvider:
+        if cls._is_ollama_model(model):
+            return cls._providers['ollama']
+        if model in ['gpt-5','gpt-5.1','gpt-5.2']:
+            return cls._providers['gpt5']
+        if cls._active_provider:
+            return cls._providers[cls._active_provider]
+        return cls._providers['openai']
+
+# 新增API Key智能识别功能
+def detect_provider(api_key: str) -> dict:
+    result = {"provider":"unknown","base_url":None,"models":[],"display_name":"未知"}
+    try:
+        if api_key.startswith("sk-ant-"):
+            result.update({"provider":"anthropic","base_url":"https://api.anthropic.com","models":PROVIDER_MODELS["anthropic"],"display_name":"Anthropic"})
+        elif api_key.startswith("sk-"):
+            try:
+                resp = requests.get("https://api.openai.com/v1/models", headers={"Authorization": f"Bearer {api_key}"}, timeout=5)
+                if resp.status_code==200:
+                    result.update({"provider":"openai","base_url":"https://api.openai.com/v1","models":PROVIDER_MODELS["openai"],"display_name":"OpenAI"})
+                else:
+                    resp = requests.get("https://api.deepseek.com/models", headers={"Authorization": f"Bearer {api_key}"}, timeout=5)
+                    if resp.status_code==200:
+                        result.update({"provider":"deepseek","base_url":"https://api.deepseek.com","models":PROVIDER_MODELS["deepseek"],"display_name":"DeepSeek"})
+            except:
+                pass
+        elif api_key.startswith("gibd-services-"):
+            result.update({"provider":"gibd","base_url":f"https://www.gibd.online/api/openai/{api_key}","models":PROVIDER_MODELS["gibd"],"display_name":"GIBD"})
+        elif api_key.startswith("eyJ"):
+            result.update({"provider":"minimax","base_url":"https://api.minimax.chat/v1","models":PROVIDER_MODELS["minimax"],"display_name":"MiniMax"})
+        elif api_key.startswith("AIza"):
+            result.update({"provider":"gemini","base_url":"Google AI SDK","models":PROVIDER_MODELS["gemini"],"display_name":"Google Gemini"})
+    except:
+        pass
+    return result
 
 def load_model_config():
     """Load configuration for all model providers"""

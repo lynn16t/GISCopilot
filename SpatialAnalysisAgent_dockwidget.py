@@ -58,6 +58,8 @@ from qgis.core import QgsProject, QgsLayerTreeModel, QgsLayerTreeNode, QgsRectan
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsVectorLayer, \
     QgsCoordinateTransformContext, QgsGeometry, QgsFeature, QgsVectorFileWriter
 
+
+
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
     os.path.dirname(__file__), 'SpatialAnalysisAgent_dockwidget_base.ui'))
 
@@ -267,6 +269,24 @@ class InstallPipThread(QThread):
 
 
 # **************************************************************************************************************************
+class ProviderDetectionWorker(QThread):
+    result_ready = pyqtSignal(dict)
+
+    def __init__(self, api_key):
+        super().__init__()
+        self.api_key = api_key
+
+    def run(self):
+        try:
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'SpatialAnalysisAgent'))
+            from SpatialAnalysisAgent_ModelProvider import detect_provider
+            result = detect_provider(self.api_key)
+        except Exception as e:
+            print(f"Provider detection error: {e}")
+            result = {"provider": "unknown", "base_url": None, "models": [], "display_name": "检测失败"}
+        self.result_ready.emit(result)
+
+
 class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     closingPlugin = pyqtSignal()
 
@@ -355,6 +375,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # Connect model selection to reasoning effort visibility
         self.modelNameComboBox.currentTextChanged.connect(self.on_model_changed)
         
+        default_models = ["gpt-5.2", "gpt-5.1", "gpt-5", "gpt-4o", "gpt-4", "gpt-4o-mini"]
+        self.modelNameComboBox.addItems(default_models)
         # Initially hide reasoning effort controls
         self.toggle_reasoning_effort_visibility()
         
@@ -400,7 +422,15 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # Show model info dialog on first load
         # Use QTimer to delay the dialog so it appears after the plugin is fully loaded
         from PyQt5.QtCore import QTimer
+
+        # 防抖定时器，用于 API Key 自动检测
+        self.api_key_timer = QTimer()
+        self.api_key_timer.setSingleShot(True)
+        self.api_key_timer.setInterval(800)  # 800ms 防抖
+        self.api_key_timer.timeout.connect(self.on_api_key_changed)
         QTimer.singleShot(1000, self.show_model_info_dialog)
+        # 当文本改变时启动定时器
+        self.OpenAI_key_LineEdit.textChanged.connect(lambda: self.api_key_timer.start())
 
     def initUI(self):
 
@@ -2172,8 +2202,6 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.output_text_edit.repaint()
         self.output_text_edit.verticalScrollBar().setValue(self.output_text_edit.verticalScrollBar().maximum())
 
-
-
     # @pyqtSlot(bool)
     def thread_finished(self, success):
 
@@ -2342,6 +2370,36 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         else:
             QMessageBox.critical(self, "Installation Failed", message)
 
+    
+    def on_detection_complete(self, result):
+        """API Key 检测完成后的回调"""
+        if result['provider'] == 'unknown':
+            self.provider_status_label.setText("未识别，请检查 Key 或手动配置")
+        else:
+            self.provider_status_label.setText(f"已识别：{result['display_name']}")
+            # 动态更新模型列表
+            self.modelNameComboBox.clear()
+            self.modelNameComboBox.addItems(result['models'])
+            # 触发一次 model changed 更新 reasoning effort 等联动
+            self.on_model_changed()
+
+    def on_api_key_changed(self):
+        api_key = self.OpenAI_key_LineEdit.text().strip()
+        if len(api_key) < 10:  # 简单校验
+            return
+
+        # 保存到 config.ini
+        self.update_config_file()
+
+        # 显示检测状态
+        self.provider_status_label.setText("🔄 正在检测...")
+
+        # 启动子线程检测 API Key 对应的 provider
+        self.detection_worker = ProviderDetectionWorker(api_key)
+        self.detection_worker.result_ready.connect(self.on_detection_complete)
+        self.detection_worker.start()
+    
+    
 
 # The classFactory function must be placed at the end of this file
 def classFactory(iface):
