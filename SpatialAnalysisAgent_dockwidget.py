@@ -336,7 +336,14 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.import_libraries()
 
         self.load_OpenAI_key()
-
+        # 启动时自动检测已保存的 API Key
+        saved_key = self.OpenAI_key_LineEdit.text().strip()
+        if saved_key and len(saved_key) >= 10:
+            self.provider_status_label.setText("🔄 正在检测...")
+            self.detection_worker = ProviderDetectionWorker(saved_key)
+            self.detection_worker.result_ready.connect(self.on_detection_complete)
+            self.detection_worker.start()
+            
         self.initUI()
         # Connect to layer added and removed signals
         QgsProject.instance().layerWasAdded.connect(self.on_layer_added)

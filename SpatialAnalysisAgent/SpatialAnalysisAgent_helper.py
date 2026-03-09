@@ -7,7 +7,7 @@ import os
 import requests
 import warnings
 from openai import OpenAI
-
+from SpatialAnalysisAgent_ModelProvider import create_unified_client, ModelProviderFactory
 # Fix sys.stderr being None during QGIS initialization (prevents NumPy AttributeError)
 if sys.stderr is None:
     sys.stderr = sys.stdout
@@ -1222,7 +1222,16 @@ def unified_llm_call(request_id, messages, model_name, stream=False, temperature
     if stream:
         out = ''
         for chunk in response:
-            out += getattr(chunk,'content',str(chunk))
+            try:
+                content = chunk.choices[0].delta.content
+                if content:
+                    print(content, end="")
+                    out += content
+            except (IndexError, AttributeError):
+                # 兼容非标准流式响应（如 GIBD 代理返回的纯字符串）
+                if isinstance(chunk, str):
+                    print(chunk, end="")
+                    out += chunk
         return out
     else:
         # 非流式

@@ -207,9 +207,10 @@ class DeepSeekProvider(OpenAIProvider):
     """DeepSeek Provider 兼容 OpenAI协议"""
     def create_client(self, config):
         from openai import OpenAI
-        api_key = config.get('api_key')
+        api_key = config.get('api_key', '')
+        self.api_key = api_key
+        self.base_url = "https://api.deepseek.com"
         return OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
-
 # 新增
 class AnthropicProvider(ModelProvider):
     def create_client(self, config):
@@ -475,8 +476,14 @@ class ModelProviderFactory:
     def get_provider(cls, model: str) -> ModelProvider:
         if cls._is_ollama_model(model):
             return cls._providers['ollama']
-        if model in ['gpt-5','gpt-5.1','gpt-5.2']:
+        if model in ['gpt-5', 'gpt-5.1', 'gpt-5.2']:
             return cls._providers['gpt5']
+        # 先查 _model_providers 映射表
+        if model in cls._model_providers:
+            provider_name = cls._model_providers[model]
+            if provider_name in cls._providers:
+                return cls._providers[provider_name]
+        # 再查动态设置的 active_provider
         if cls._active_provider:
             return cls._providers[cls._active_provider]
         return cls._providers['openai']
@@ -516,28 +523,21 @@ def load_model_config():
     
     model_config = {}
     
-    # OpenAI config
+    # 读取统一的 API Key
+    api_key = ''
     if 'API_Key' in config and 'OpenAI_key' in config['API_Key']:
-        model_config['openai'] = {
-            'api_key': config['API_Key']['OpenAI_key']
-        }
+        api_key = config['API_Key']['OpenAI_key']
     
-    # GPT-5 config (uses same OpenAI key)
-    if 'API_Key' in config and 'OpenAI_key' in config['API_Key']:
-        model_config['gpt5'] = {
-            'api_key': config['API_Key']['OpenAI_key']
-        }
+    # 所有需要 API Key 的云端厂商共用同一个 key
+    for provider_name in ['openai', 'deepseek', 'gpt5', 'gibd', 'anthropic', 'gemini', 'minimax', 'glm', 'qwen']:
+        if api_key:
+            model_config[provider_name] = {'api_key': api_key}
     
-    # Ollama config (local) - Force to use your server
+    # Ollama 本地模型，不需要 API Key
     model_config['ollama'] = {
-        'base_url': 'http://128.118.54.16:11434/v1',  # Force your server URL
-        'api_key': 'no-api'  # Match what works in LLM_SERVER_TESTING_v1.py
+        'base_url': 'http://128.118.54.16:11434/v1',
+        'api_key': 'no-api'
     }
-    
-    # Debug logging
-    # print(f"[DEBUG] Ollama config loaded: {model_config['ollama']}")
-    
-    # Removed HuggingFace config - not needed for gpt-oss-20b
     
     return model_config
 
