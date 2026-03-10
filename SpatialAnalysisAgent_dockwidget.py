@@ -22,10 +22,13 @@
  ***************************************************************************/
 """
 import base64
-import os
+import sys, os
+_sa_dir = os.path.join(os.path.dirname(__file__), 'SpatialAnalysisAgent')
+if _sa_dir not in sys.path:
+    sys.path.insert(0, _sa_dir)
+from SpatialAnalysisAgent_SessionContext import SessionContext
 import platform
 import shutil
-import sys
 import urllib
 import subprocess
 import traceback
@@ -67,7 +70,7 @@ current_script_dir = os.path.dirname(os.path.abspath(__file__))
 
 from .install_packages.check_packages import read_libraries_from_file, check_missing_libraries, \
     check_and_install_with_versions, parse_requirements_with_versions, check_version_mismatches
-
+from SpatialAnalysisAgent.SpatialAnalysisAgent_AgentController import AgentController, AgentState, UserAction
 
 def python_env():
     # Get the os type
@@ -439,6 +442,16 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # 当文本改变时启动定时器
         self.OpenAI_key_LineEdit.textChanged.connect(lambda: self.api_key_timer.start())
 
+        self.session = SessionContext()
+        
+        #状态机控制按钮
+        self.agent = AgentController(session=self.session)
+        self._setup_action_buttons()
+        self.agent.state_changed.connect(self._on_state_changed)
+        self.agent.status_update.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False))
+        self.agent.chat_response.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False))
+        self.agent.error_occurred.connect(lambda msg: self.update_chatgpt_ans_textBrowser(f"Error: {msg}", is_user=False))
+        
     def initUI(self):
 
         # Disable the data_pathLineEdit permanently
@@ -1494,7 +1507,21 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             return  # Stop further execution if the task is empty
         # print("Sending message:", self.task_LineEdit.toPlainText())  # Debugging statement
         # Emit the user's message in chatgpt_ans first
+        pending = getattr(self, '_pending_action', None)
+        if pending:
+            self._pending_action = None  # 清除标记
+            self.update_chatgpt_ans_textBrowser(user_message, is_user=True)
+            self.task_LineEdit.clear()
 
+            if pending == "MODIFY_PLAN":
+                self.agent.handle_user_action(UserAction.MODIFY_PLAN, user_message)
+            elif pending == "TWEAK_PLAN":
+                self.agent.handle_user_action(UserAction.TWEAK_PLAN, user_message)
+            elif pending == "REPORT_ERROR":
+                self.agent.handle_user_action(UserAction.REPORT_ERROR, user_message)
+            return  # 不走原有的 run_script 逻辑
+        
+        
         self.update_chatgpt_ans_textBrowser(
             f"--------------------------------------------------------------------------------------------",
             is_user=None)
@@ -1836,6 +1863,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # self.thread.debugged_code_ready.connect(self.update_code_editor)
         self.thread.generated_code_ready.connect(self.update_code_editor)
         self.thread.script_finished.connect(self.thread_finished)
+        self.session.add_message("user", self.task) 
+        self.thread.session = self.session
         self.thread.start()
 
         # Disable the send_button
@@ -2280,7 +2309,6 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # self.update_chatgpt_ans_textBrowser(f"Please enter a valid OpenAI API keyYYY.")
         return api_key
 
-
     def add_documentation_file(self):
         try:
             # Popup to select the tool category (QGIS Processing Tool or Customized Tool)
@@ -2406,6 +2434,240 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.detection_worker.result_ready.connect(self.on_detection_complete)
         self.detection_worker.start()
     
+    def _setup_action_buttons(self):
+        """
+        创建动态按钮区域，放在 task_LineEdit 和 run_button 行之间。
+        根据 AgentController 的状态切换显示。
+        """
+        from PyQt5.QtWidgets import QWidget, QHBoxLayout, QPushButton, QSizePolicy
+
+        # ---- 创建按钮容器 ----
+        self.action_buttons_widget = QWidget()
+        self.action_buttons_widget.setMaximumHeight(50)
+        action_layout = QHBoxLayout(self.action_buttons_widget)
+        action_layout.setContentsMargins(5, 5, 5, 5)
+        action_layout.setSpacing(8)
+
+        # ---- 按钮样式 ----
+        confirm_style = """
+            QPushButton {
+                background-color: #4CAF50; color: white;
+                border: none; border-radius: 8px;
+                padding: 8px 16px; font-size: 12px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #45a049; }
+            QPushButton:pressed { background-color: #3d8b40; }
+        """
+        modify_style = """
+            QPushButton {
+                background-color: #FF9800; color: white;
+                border: none; border-radius: 8px;
+                padding: 8px 16px; font-size: 12px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #F57C00; }
+            QPushButton:pressed { background-color: #E65100; }
+        """
+        cancel_style = """
+            QPushButton {
+                background-color: #f44336; color: white;
+                border: none; border-radius: 8px;
+                padding: 8px 16px; font-size: 12px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #d32f2f; }
+            QPushButton:pressed { background-color: #b71c1c; }
+        """
+        neutral_style = """
+            QPushButton {
+                background-color: #2196F3; color: white;
+                border: none; border-radius: 8px;
+                padding: 8px 16px; font-size: 12px; font-weight: bold;
+            }
+            QPushButton:hover { background-color: #1976D2; }
+            QPushButton:pressed { background-color: #0D47A1; }
+        """
+
+        # ---- PLAN_READY 按钮组 ----
+        self.btn_confirm_plan = QPushButton("✓ 确认执行")
+        self.btn_confirm_plan.setStyleSheet(confirm_style)
+        self.btn_confirm_plan.clicked.connect(self._on_confirm_plan)
+
+        self.btn_modify_plan = QPushButton("✎ 我有修改")
+        self.btn_modify_plan.setStyleSheet(modify_style)
+        self.btn_modify_plan.clicked.connect(self._on_modify_plan)
+
+        self.btn_cancel = QPushButton("✕ 取消")
+        self.btn_cancel.setStyleSheet(cancel_style)
+        self.btn_cancel.clicked.connect(self._on_cancel)
+
+        # ---- RESULT_READY 按钮组 ----
+        self.btn_tweak_plan = QPushButton("✎ 微调方案")
+        self.btn_tweak_plan.setStyleSheet(modify_style)
+        self.btn_tweak_plan.clicked.connect(self._on_tweak_plan)
+
+        self.btn_report_error = QPushButton("⚠ 结果有误")
+        self.btn_report_error.setStyleSheet(cancel_style)
+        self.btn_report_error.clicked.connect(self._on_report_error)
+
+        self.btn_finish = QPushButton("✓ 完成")
+        self.btn_finish.setStyleSheet(confirm_style)
+        self.btn_finish.clicked.connect(self._on_finish)
+
+        # ---- 把所有按钮加进容器 ----
+        all_action_buttons = [
+            self.btn_confirm_plan, self.btn_modify_plan, self.btn_cancel,
+            self.btn_tweak_plan, self.btn_report_error, self.btn_finish,
+        ]
+        for btn in all_action_buttons:
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.setMinimumHeight(35)
+            action_layout.addWidget(btn)
+            btn.hide()  # 初始全部隐藏
+
+        # ---- 把容器插入到现有布局中 ----
+        # 找到 task_LineEdit 所在的布局，在 task_LineEdit 下方插入按钮容器
+        # Request Page tab 的布局通常是 gridLayout 或 verticalLayout
+        request_page = self.tabWidget.widget(0)  # Request Page 是第一个 tab
+        layout = request_page.layout()
+
+        if layout is not None:
+            # 在 task_LineEdit 的父布局中找到 task_LineEdit 的位置
+            # 然后在其后面插入 action_buttons_widget
+            # 由于 .ui 文件的布局结构，我们在 horizontalLayout（run_button 那行）上方插入
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item and item.layout():
+                    # 查找包含 run_button 的 horizontalLayout
+                    sub_layout = item.layout()
+                    for j in range(sub_layout.count()):
+                        sub_item = sub_layout.itemAt(j)
+                        if sub_item and sub_item.widget() == self.run_button:
+                            # 找到了 run_button 所在的行
+                            # 在这个布局的上方插入 action_buttons_widget
+                            layout.insertWidget(i, self.action_buttons_widget)
+                            break
+
+        # 如果上面的自动查找失败，退回到手动方式
+        if self.action_buttons_widget.parent() is None:
+            # 手动添加到 Request Page 的底部区域
+            if layout:
+                # 尝试在倒数第二个位置插入（run_button 行之前）
+                layout.addWidget(self.action_buttons_widget)
+
+        # 初始状态隐藏按钮容器
+        self.action_buttons_widget.hide()
+
+
+    def _on_state_changed(self, state_name):
+        """
+        AgentController 状态变化时，切换底部区域的显示模式。
+        """
+        # ---- 先隐藏所有动态按钮 ----
+        action_buttons = [
+            self.btn_confirm_plan, self.btn_modify_plan, self.btn_cancel,
+            self.btn_tweak_plan, self.btn_report_error, self.btn_finish,
+        ]
+        for btn in action_buttons:
+            btn.hide()
+
+        if state_name == "IDLE":
+            # 文本输入模式：显示输入框和发送按钮
+            self.action_buttons_widget.hide()
+            self.task_LineEdit.show()
+            self.task_LineEdit.setEnabled(True)
+            self.task_LineEdit.setPlaceholderText("Write your request here...")
+            self.run_button.show()
+            self.run_button.setEnabled(True)
+            self.interrupt_button.setEnabled(False)
+
+        elif state_name == "ANALYZING":
+            # 分析中：输入框禁用，显示中断按钮
+            self.action_buttons_widget.hide()
+            self.task_LineEdit.show()
+            self.task_LineEdit.setEnabled(False)
+            self.run_button.setEnabled(False)
+            self.interrupt_button.setEnabled(True)
+
+        elif state_name == "PLAN_READY":
+            # 按钮选择模式：隐藏输入框，显示方案确认按钮
+            self.task_LineEdit.hide()
+            self.run_button.hide()
+            self.action_buttons_widget.show()
+            self.btn_confirm_plan.show()
+            self.btn_modify_plan.show()
+            self.btn_cancel.show()
+            self.interrupt_button.setEnabled(False)
+
+        elif state_name == "EXECUTING":
+            # 执行中：输入框禁用，显示中断按钮
+            self.action_buttons_widget.hide()
+            self.task_LineEdit.show()
+            self.task_LineEdit.setEnabled(False)
+            self.run_button.setEnabled(False)
+            self.interrupt_button.setEnabled(True)
+
+        elif state_name == "RESULT_READY":
+            # 按钮选择模式：隐藏输入框，显示结果反馈按钮
+            self.task_LineEdit.hide()
+            self.run_button.hide()
+            self.action_buttons_widget.show()
+            self.btn_tweak_plan.show()
+            self.btn_report_error.show()
+            self.btn_finish.show()
+            self.interrupt_button.setEnabled(False)
+
+        elif state_name == "CONVERSING":
+            # 对话模式：显示输入框（用于输入修改意见等）
+            self.action_buttons_widget.hide()
+            self.task_LineEdit.show()
+            self.task_LineEdit.setEnabled(True)
+            self.task_LineEdit.setPlaceholderText("输入修改意见...")
+            self.task_LineEdit.clear()
+            self.run_button.show()
+            self.run_button.setEnabled(True)
+            self.interrupt_button.setEnabled(False)
+
+
+    # ─── 按钮点击处理方法 ───
+
+    def _on_confirm_plan(self):
+        """用户点击"确认执行" """
+        self.update_chatgpt_ans_textBrowser("已确认方案，开始执行...", is_user=True)
+        self.agent.handle_user_action(UserAction.CONFIRM_PLAN)
+
+    def _on_modify_plan(self):
+        """用户点击"我有修改"，切换到文本输入让用户输入修改意见"""
+        self.update_chatgpt_ans_textBrowser("请输入您的修改意见：", is_user=False)
+        # 手动切换到 CONVERSING 的 UI（显示文本框）
+        self._on_state_changed("CONVERSING")
+        self.task_LineEdit.setPlaceholderText("输入您对方案的修改意见...")
+        # 标记当前是方案修改模式，send_button_clicked 里据此路由
+        self._pending_action = "MODIFY_PLAN"
+
+    def _on_cancel(self):
+        """用户点击"取消" """
+        self.update_chatgpt_ans_textBrowser("任务已取消。", is_user=True)
+        self.agent.handle_user_action(UserAction.CANCEL)
+
+    def _on_tweak_plan(self):
+        """用户点击"微调方案"，切换到文本输入"""
+        self.update_chatgpt_ans_textBrowser("请输入您的微调意见：", is_user=False)
+        self._on_state_changed("CONVERSING")
+        self.task_LineEdit.setPlaceholderText("输入您对方案的微调意见...")
+        self._pending_action = "TWEAK_PLAN"
+
+    def _on_report_error(self):
+        """用户点击"结果有误"，切换到文本输入"""
+        self.update_chatgpt_ans_textBrowser("请描述结果中的问题：", is_user=False)
+        self._on_state_changed("CONVERSING")
+        self.task_LineEdit.setPlaceholderText("描述结果中的问题...")
+        self._pending_action = "REPORT_ERROR"
+
+    def _on_finish(self):
+        """用户点击"完成" """
+        self.update_chatgpt_ans_textBrowser("任务完成！", is_user=True)
+        self.agent.handle_user_action(UserAction.FINISH)
+
+    
     
 
 # The classFactory function must be placed at the end of this file
@@ -2438,6 +2700,7 @@ class ScriptThread(QThread):
         self.reasoning_effort_value = reasoning_effort_value
         self.latest_generated_code = ""  # cache for last generated code
         self._is_running = True  # Flag to control the running state
+        self.session = None
 
     def run(self):
         original_stdout = sys.stdout
@@ -2456,6 +2719,7 @@ class ScriptThread(QThread):
             local_vars = {
 
                 'task': self.task,
+                'session': self.session,
                 'data_path': self.data_path,
                 'workspace_directory': self.workspace_directory,
                 # 'OpenAI_key': self.OpenAI_key,

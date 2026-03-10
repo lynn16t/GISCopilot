@@ -22,7 +22,7 @@ import SpatialAnalysisAgent_Constants as constants
 import SpatialAnalysisAgent_helper as helper
 import SpatialAnalysisAgent_ToolsDocumentation as ToolsDocumentation
 import SpatialAnalysisAgent_Codebase as codebase
-
+from SpatialAnalysisAgent_SessionContext import LayerSnapshot
 
 
 
@@ -89,7 +89,9 @@ data_path_str = data_path.split('\n')
 attributes_json, data_overview = helper.add_data_overview_to_data_location(request_id=request_id,task=task, data_location_list=data_path_str, model_name=operation_model, reasoning_effort=reasoning_effort_value)
 
 print(f"data overview: {data_overview}")
-
+if 'session' in dir() and session is not None:
+    if not session.has_data_overview():
+        session.set_data_overview(str(data_overview))
 # print(DATA_LOCATIONS)
 # print("\n__")
 print(attributes_json)
@@ -110,6 +112,8 @@ if User_Query_Tuning:
     print("TASK_BREAKDOWN:", end="")
     task_breakdown = helper.Query_tuning(request_id=request_id, Query_tuning_prompt_str = Query_tuning_prompt_str, model_name= model_name, stream=True, reasoning_effort=reasoning_effort_value)
     print("\n_")  # End marker for task breakdown
+    if 'session' in dir() and session is not None:
+        session.add_message("assistant", f"Task breakdown:\n{task_breakdown}")
 else:
     # OPERATION IDENTIFICATION
     OperationIdentification_prompt_str = helper.create_OperationIdentification_promt(task=task)
@@ -222,6 +226,14 @@ for selected_tool in selected_tools:
 print(f"List of selected tool IDs: {selected_tool_IDs_list}")
 # Step 3: Join all the collected documentation into a single string
 combined_documentation_str = '\n'.join(all_documentation)
+if 'session' in dir() and session is not None:
+    session.set_plan({
+        "task_breakdown": task_breakdown,
+        "selected_tools": selected_tools,
+        "selected_tool_IDs": selected_tool_IDs_list,
+    })
+    session.add_message("assistant",
+        f"Selected tools: {selected_tools}\nTool IDs: {selected_tool_IDs_list}")
 print(combined_documentation_str)
 
 
@@ -336,23 +348,76 @@ if is_review:
     import urllib.parse
     print("CODE_READY_URLENCODED:" + urllib.parse.quote(generated_code))
 
-    
+    snapshot_before = None
+    if 'session' in dir() and session is not None:
+        snapshot_before = session.take_layer_snapshot()
+        print(f"SESSION: Layer snapshot taken, {len(snapshot_before.layers)} layers recorded")
+        
     #%% EXECUTION OF THE CODE
     # print("Running code2")
     code, output, error_collector = helper.execute_complete_program(request_id=request_id,code=reviewed_code, try_cnt=5, task=task, model_name=model_name,
                                                    reasoning_effort_value=reasoning_effort_value, documentation_str=combined_documentation_str,
                                                    data_path= data_path, workspace_directory=workspace_directory, review=True, stream=True, reasoning_effort=reasoning_effort_value)
+    
+    
+    if 'session' in dir() and session is not None:
+        exec_success = (code is not None and len(code.strip()) > 0 and
+                        (len(error_collector) == 0 or output))
+        error_msg = ""
+        if error_collector:
+            error_msg = error_collector[-1].get("error_message", "")
+        session.add_result(
+            code=code or "",
+            success=exec_success,
+            output=output or "",
+            error_message=error_msg,
+            snapshot_before=snapshot_before
+        )
+        # 打印数据变化摘要
+        if session.results:
+            last_result = session.results[-1]
+            added = last_result.data_changes.get("added", [])
+            if added:
+                layer_names = [l.get("name", "?") for l in added]
+                print(f"SESSION: New layers created: {layer_names}")
+            print(f"SESSION: Execution recorded. Total: {len(session.results)} executions")
 
     # display(Code(code, language='python'))
 else:
     # In non-review mode, the code is already emitted above, just proceed to execution
     generated_code = extracted_code
 
+    snapshot_before = None
+    if 'session' in dir() and session is not None:
+        snapshot_before = session.take_layer_snapshot()
+        print(f"SESSION: Layer snapshot taken, {len(snapshot_before.layers)} layers recorded")
+        
     # print("Running code2")
     code, output, error_collector = helper.execute_complete_program(request_id=request_id, code= extracted_code, try_cnt=5, task=task, model_name=model_name,
                                                    reasoning_effort_value=reasoning_effort_value, documentation_str=combined_documentation_str,
                                                    data_path=data_path, workspace_directory=workspace_directory, stream=True, review=True, reasoning_effort=reasoning_effort_value)
 
+    if 'session' in dir() and session is not None:
+        exec_success = (code is not None and len(code.strip()) > 0 and
+                        (len(error_collector) == 0 or output))
+        error_msg = ""
+        if error_collector:
+            error_msg = error_collector[-1].get("error_message", "")
+        session.add_result(
+            code=code or "",
+            success=exec_success,
+            output=output or "",
+            error_message=error_msg,
+            snapshot_before=snapshot_before
+        )
+        # 打印数据变化摘要
+        if session.results:
+            last_result = session.results[-1]
+            added = last_result.data_changes.get("added", [])
+            if added:
+                layer_names = [l.get("name", "?") for l in added]
+                print(f"SESSION: New layers created: {layer_names}")
+            print(f"SESSION: Execution recorded. Total: {len(session.results)} executions")
 
 
 generated_code = code
