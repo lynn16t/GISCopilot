@@ -70,7 +70,7 @@ current_script_dir = os.path.dirname(os.path.abspath(__file__))
 
 from .install_packages.check_packages import read_libraries_from_file, check_missing_libraries, \
     check_and_install_with_versions, parse_requirements_with_versions, check_version_mismatches
-from SpatialAnalysisAgent.SpatialAnalysisAgent_AgentController import AgentController, AgentState, UserAction
+from SpatialAnalysisAgent_AgentController import AgentController, AgentState, UserAction
 
 def python_env():
     # Get the os type
@@ -322,10 +322,9 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # required_packages = os.path.join(current_script_dir, 'install_packages', 'requirements.txt')
 
         # check_and_install_libraries(required_packages)
-
-        self.library_check_thread = LibraryCheckThread(required_packages)
-        self.library_check_thread.finished_checking.connect(self.handle_missing_libraries)
-        self.library_check_thread.start()  # Start the background thread
+        # self.library_check_thread = LibraryCheckThread(required_packages)
+        # self.library_check_thread.finished_checking.connect(self.handle_missing_libraries)
+        # self.library_check_thread.start()  # Start the background thread
 
         # # Start the OpenAI version check thread
         # self.version_check_thread = VersionCheckThread()
@@ -2500,17 +2499,18 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.btn_cancel.clicked.connect(self._on_cancel)
 
         # ---- RESULT_READY 按钮组 ----
-        self.btn_tweak_plan = QPushButton("✎ 微调方案")
+        
+        self.btn_finish = QPushButton("✓ 完成")
+        self.btn_finish.setStyleSheet(confirm_style)
+        self.btn_finish.clicked.connect(self._on_finish)
+
+        self.btn_tweak_plan = QPushButton("✎ 修改方案")
         self.btn_tweak_plan.setStyleSheet(modify_style)
         self.btn_tweak_plan.clicked.connect(self._on_tweak_plan)
 
         self.btn_report_error = QPushButton("⚠ 结果有误")
         self.btn_report_error.setStyleSheet(cancel_style)
         self.btn_report_error.clicked.connect(self._on_report_error)
-
-        self.btn_finish = QPushButton("✓ 完成")
-        self.btn_finish.setStyleSheet(confirm_style)
-        self.btn_finish.clicked.connect(self._on_finish)
 
         # ---- 把所有按钮加进容器 ----
         all_action_buttons = [
@@ -2524,34 +2524,20 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             btn.hide()  # 初始全部隐藏
 
         # ---- 把容器插入到现有布局中 ----
-        # 找到 task_LineEdit 所在的布局，在 task_LineEdit 下方插入按钮容器
-        # Request Page tab 的布局通常是 gridLayout 或 verticalLayout
-        request_page = self.tabWidget.widget(0)  # Request Page 是第一个 tab
-        layout = request_page.layout()
-
-        if layout is not None:
-            # 在 task_LineEdit 的父布局中找到 task_LineEdit 的位置
-            # 然后在其后面插入 action_buttons_widget
-            # 由于 .ui 文件的布局结构，我们在 horizontalLayout（run_button 那行）上方插入
-            for i in range(layout.count()):
-                item = layout.itemAt(i)
-                if item and item.layout():
-                    # 查找包含 run_button 的 horizontalLayout
-                    sub_layout = item.layout()
-                    for j in range(sub_layout.count()):
-                        sub_item = sub_layout.itemAt(j)
-                        if sub_item and sub_item.widget() == self.run_button:
-                            # 找到了 run_button 所在的行
-                            # 在这个布局的上方插入 action_buttons_widget
-                            layout.insertWidget(i, self.action_buttons_widget)
-                            break
-
-        # 如果上面的自动查找失败，退回到手动方式
-        if self.action_buttons_widget.parent() is None:
-            # 手动添加到 Request Page 的底部区域
-            if layout:
-                # 尝试在倒数第二个位置插入（run_button 行之前）
-                layout.addWidget(self.action_buttons_widget)
+        # 直接放在 task_LineEdit 的后面（同一个父 widget 的布局里）
+        parent_layout = self.task_LineEdit.parentWidget().layout()
+        if parent_layout is not None:
+            # 找到 task_LineEdit 在布局中的位置
+            idx = parent_layout.indexOf(self.task_LineEdit)
+            if idx >= 0 and hasattr(parent_layout, 'insertWidget'):
+                parent_layout.insertWidget(idx + 1, self.action_buttons_widget)
+            else:
+                parent_layout.addWidget(self.action_buttons_widget)
+        else:
+            # 兜底：直接加到 Request Page 的布局
+            request_page = self.tabWidget.widget(0)
+            if request_page.layout():
+                request_page.layout().addWidget(self.action_buttons_widget)
 
         # 初始状态隐藏按钮容器
         self.action_buttons_widget.hide()
