@@ -446,18 +446,20 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         #状态机控制按钮
         self.agent = AgentController(session=self.session)
         self._setup_action_buttons()
-        self.agent.state_changed.connect(self._on_state_changed)
-        self.agent.status_update.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False))
-        self.agent.chat_response.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False))
-        self.agent.error_occurred.connect(lambda msg: self.update_chatgpt_ans_textBrowser(f"Error: {msg}", is_user=False))
+        # 所有 AgentController 信号都从子线程发出，必须用 QueuedConnection
+        # 确保 slot 在主线程执行，否则 Qt GUI 操作会导致 access violation 崩溃
+        self.agent.state_changed.connect(self._on_state_changed, Qt.QueuedConnection)
+        self.agent.status_update.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False), Qt.QueuedConnection)
+        self.agent.chat_response.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False), Qt.QueuedConnection)
+        self.agent.error_occurred.connect(lambda msg: self.update_chatgpt_ans_textBrowser(f"Error: {msg}", is_user=False), Qt.QueuedConnection)
 
         # Phase 3: 连接分析/执行阶段的输出信号
-        self.agent.execution_output.connect(self.update_output)
-        self.agent.graph_ready.connect(self._on_agent_graph_ready)
-        self.agent.code_ready.connect(self.update_code_editor)
-        self.agent.plan_ready.connect(self._on_agent_plan_ready)
-        self.agent.result_ready.connect(self._on_agent_result_ready)
-        self.agent.task_finished.connect(self._on_agent_task_finished)
+        self.agent.execution_output.connect(self.update_output, Qt.QueuedConnection)
+        self.agent.graph_ready.connect(self._on_agent_graph_ready, Qt.QueuedConnection)
+        self.agent.code_ready.connect(self.update_code_editor, Qt.QueuedConnection)
+        self.agent.plan_ready.connect(self._on_agent_plan_ready, Qt.QueuedConnection)
+        self.agent.result_ready.connect(self._on_agent_result_ready, Qt.QueuedConnection)
+        self.agent.task_finished.connect(self._on_agent_task_finished, Qt.QueuedConnection)
         
     def initUI(self):
 
@@ -1498,7 +1500,58 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             # Set all paths in data_pathLineEdit separated by a semicolon
             self.data_pathLineEdit.setPlainText(all_paths)
 
+    def chatgpt_direct_answer(self, user_message):
+        """通过后台线程进行闲聊回复，避免阻塞 UI。"""
+        self.model_name = self.modelNameComboBox.currentText()
 
+        self._chat_thread = ChatAnswerThread(user_message, self.model_name)
+        self._chat_thread.reply_ready.connect(
+            lambda reply: self.update_chatgpt_ans_textBrowser(reply, is_user=False))
+        self._chat_thread.error_occurred.connect(
+            lambda err: self.update_chatgpt_ans_textBrowser(f"Error: {err}", is_user=False))
+        self._chat_thread.start()
+
+    def _on_intent_classified(self, intent):
+        """Callback when intent classification thread finishes."""
+        from PyQt5.QtWidgets import QMessageBox
+
+        user_message = self._pending_user_message
+        current_model = self.modelNameComboBox.currentText()
+        reasoning_effort = self.reasoningEffortComboBox.currentText() if self.reasoningEffortComboBox.isVisible() else None
+
+        if intent == 'CHAT':
+            self.update_chatgpt_ans_textBrowser("Generating response...", is_user=False)
+            self.chatgpt_direct_answer(user_message)
+
+        elif intent == 'GIS_TASK':
+            if current_model == 'gpt-5':
+                self.update_chatgpt_ans_textBrowser(
+                    "Analyzing the task (may take some time while GPT-5 is reasoning)...", is_user=False)
+            else:
+                self.update_chatgpt_ans_textBrowser("Analyzing the task...", is_user=False)
+            self._run_via_agent()
+
+        elif intent == 'PLAN_MODIFY':
+            self.update_chatgpt_ans_textBrowser("Updating the plan...", is_user=False)
+            if hasattr(self, 'agent_controller') and self.agent_controller:
+                self.agent_controller.handle_plan_modification(user_message)
+            else:
+                self._run_via_agent()
+
+        elif intent == 'UNCLEAR':
+            reply = QMessageBox.question(
+                self, "Intent Confirmation",
+                "Would you like me to perform spatial analysis on your data,\n"
+                "or just chat about this topic?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No)
+            if reply == QMessageBox.Yes:
+                self.update_chatgpt_ans_textBrowser("Analyzing the task...", is_user=False)
+                self._run_via_agent()
+            else:
+                self.update_chatgpt_ans_textBrowser("Generating response...", is_user=False)
+                self.chatgpt_direct_answer(user_message)
+    
     def send_button_clicked(self):
         """Slot to handle the send button click."""
 
@@ -1533,6 +1586,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             f"--------------------------------------------------------------------------------------------",
             is_user=None)
         self.append_message(user_message)
+        self.task_LineEdit.clear()
 
         # Call update_config_file to save the latest API key
         self.update_config_file()
@@ -1564,17 +1618,31 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         #     self.run_script()
 
         # Check if GPT-5 or GPT-5.1 (with reasoning effort) is selected to show appropriate message
+        # ── Intent Classification ──
         current_model = self.modelNameComboBox.currentText()
-        reasoning_effort = self.reasoningEffortComboBox.currentText() if self.reasoningEffortComboBox.isVisible() else None
 
-        if current_model == 'gpt-5':
-            self.update_chatgpt_ans_textBrowser("Analyzing the task (may take some time while GPT-5 is reasoning)...", is_user=False)
-        elif current_model == 'gpt-5.1' and reasoning_effort and reasoning_effort != 'none':
-            self.update_chatgpt_ans_textBrowser("Analyzing the task (may take some time while GPT-5.1 is reasoning)...", is_user=False)
-        else:
-            self.update_chatgpt_ans_textBrowser("Analyzing the task...", is_user=False)
-        # === Phase 3: 通过 AgentController 路由，替代 run_script() ===
-        self._run_via_agent()
+        current_state = 'IDLE'
+        plan_summary = ''
+        if hasattr(self, 'agent_controller') and self.agent_controller:
+            current_state = getattr(self.agent_controller, 'current_state', 'IDLE')
+            if hasattr(self.agent_controller, 'session'):
+                plan_summary = getattr(self.agent_controller.session, 'current_plan_summary', '')
+
+        self.update_chatgpt_ans_textBrowser("Analyzing your intent...", is_user=False)
+
+        # Store user_message for the callback
+        self._pending_user_message = user_message
+
+        self._intent_thread = IntentClassifyThread(
+            user_input=user_message,
+            model_name=current_model,
+            state=current_state,
+            plan_summary=plan_summary
+        )
+        self._intent_thread.result_ready.connect(self._on_intent_classified)
+        self._intent_thread.start()
+
+
 
     def user_feedback(self):
         """Handle user feedback from thumbs up, thumbs down, and feedback message buttons."""
@@ -1752,41 +1820,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             print(f"Error sending feedback: {e}")
             self.update_chatgpt_ans_textBrowser(f"Failed to send feedback: {e}", is_user=False)
 
-    def chatgpt_direct_answer(self, user_message):
-        """Method to interact with GPT-4 and display the result in output_text_edit_2."""
-        # Update API key in the config file first
-        # self.update_OpenAI_key()
-
-        # Retrieve the API key from the config
-        self.OpenAI_key = self.get_openai_key()  # This retrieves the latest key from the config
-
-        # Emit the message from task_LineEdit first
-        # user_message = self.task_LineEdit.toPlainText()
-        self.OpenAI_key = self.get_openai_key()  # Retrieve the API key from the line edit
-        self.model_name = self.modelNameComboBox.currentText()
-        
-        # Clear the output_text_edit before starting streaming
-        self.output_text_edit.clear()
-        
-        # if user_message.strip():  # Check if the input is not empty
-        # self.update_output(f"User: {user_message}")  # Display the user message in output_text_edit_2
-
-        # Start the GPT-4 request in a separate thread
-        self.gpt_thread = GPTRequestThread(user_message, self.OpenAI_key, self.model_name,
-                                           self.conversation_history)  # your-api-key-here
-        # self.gpt_thread = GPTRequestThread(user_message, "AAzz", self.conversation_history)#your-api-key-here
-        
-        # Connect streaming chunks FIRST for real-time display in output_text_edit
-        self.gpt_thread.streaming_chunk.connect(self.handle_streaming_chunk)
-        
-        # Don't connect output_line to update_output for chat mode to avoid conflicts
-        # self.gpt_thread.output_line.connect(self.update_output)
-        
-        self.gpt_thread.chatgpt_update.connect(
-            lambda reply: self.update_chatgpt_ans_textBrowser(f"{reply}", is_user=False))
-        self.gpt_thread.finished_signal.connect(lambda: self.update_chatgpt_ans_textBrowser("Done", is_user=False))
-
-        self.gpt_thread.start()
+    # chatgpt_direct_answer 已移至 _on_intent_classified 上方（约 1501 行），
+    # 使用 ChatAnswerThread 后台线程实现，避免阻塞 UI。
 
     def open_directory_dialog(self):
         """Open a dialog for the user to select a workspace directory."""
@@ -1917,6 +1952,140 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.data_pathLineEdit.setEnabled(True)
         self.loadData.setEnabled(True)
 
+    @staticmethod
+    def _markdown_to_html(text):
+        """
+        将 LLM 返回的 Markdown 文本转换为 QTextBrowser 可渲染的 HTML。
+        覆盖：标题、粗体、斜体、行内代码、代码块、分隔线、无序/有序列表、换行。
+        """
+        import re as _re
+
+        # ── 1. 代码块（```...```）先提取保护，避免被其他规则破坏 ──
+        code_blocks = {}
+        code_block_counter = [0]
+
+        def _replace_code_block(m):
+            key = f"__CODEBLOCK_{code_block_counter[0]}__"
+            code_block_counter[0] += 1
+            lang = m.group(1) or ""
+            code = m.group(2).strip()
+            # html-escape
+            code = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            code_blocks[key] = (
+                f'<pre style="background:#f4f4f4; padding:8px; border-radius:4px; '
+                f'font-family:Consolas,monospace; font-size:12px; overflow-x:auto; '
+                f'white-space:pre-wrap; word-wrap:break-word;">'
+                f'<code>{code}</code></pre>'
+            )
+            return key
+
+        text = _re.sub(r'```(\w*)\n(.*?)```', _replace_code_block, text, flags=_re.DOTALL)
+
+        # ── 2. 行内代码 `...` ──
+        def _replace_inline_code(m):
+            code = m.group(1)
+            code = code.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            return (f'<code style="background:#f0f0f0; padding:1px 4px; border-radius:3px; '
+                    f'font-family:Consolas,monospace; font-size:12px;">{code}</code>')
+
+        text = _re.sub(r'`([^`]+)`', _replace_inline_code, text)
+
+        # ── 3. 按行处理：标题、分隔线、列表 ──
+        lines = text.split('\n')
+        result_lines = []
+        in_ul = False
+        in_ol = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            # 分隔线
+            if _re.match(r'^-{3,}$', stripped) or _re.match(r'^\*{3,}$', stripped):
+                if in_ul:
+                    result_lines.append('</ul>')
+                    in_ul = False
+                if in_ol:
+                    result_lines.append('</ol>')
+                    in_ol = False
+                result_lines.append('<hr style="border:none; border-top:1px solid #ccc; margin:8px 0;">')
+                continue
+
+            # 标题 ### / ## / #
+            heading_match = _re.match(r'^(#{1,4})\s+(.+)$', stripped)
+            if heading_match:
+                if in_ul:
+                    result_lines.append('</ul>')
+                    in_ul = False
+                if in_ol:
+                    result_lines.append('</ol>')
+                    in_ol = False
+                level = len(heading_match.group(1))
+                title_text = heading_match.group(2)
+                # h1→18px, h2→16px, h3→14px, h4→13px
+                sizes = {1: 18, 2: 16, 3: 14, 4: 13}
+                fsize = sizes.get(level, 13)
+                result_lines.append(
+                    f'<p style="font-size:{fsize}px; font-weight:bold; '
+                    f'margin:10px 0 4px 0; color:#2c3e50;">{title_text}</p>'
+                )
+                continue
+
+            # 无序列表 - / * / •
+            ul_match = _re.match(r'^[\-\*•]\s+(.+)$', stripped)
+            if ul_match:
+                if in_ol:
+                    result_lines.append('</ol>')
+                    in_ol = False
+                if not in_ul:
+                    result_lines.append('<ul style="margin:4px 0 4px 20px; padding:0;">')
+                    in_ul = True
+                result_lines.append(f'<li style="margin:2px 0;">{ul_match.group(1)}</li>')
+                continue
+
+            # 有序列表 1. / 2. / 3.
+            ol_match = _re.match(r'^(\d+)\.\s+(.+)$', stripped)
+            if ol_match:
+                if in_ul:
+                    result_lines.append('</ul>')
+                    in_ul = False
+                if not in_ol:
+                    result_lines.append('<ol style="margin:4px 0 4px 20px; padding:0;">')
+                    in_ol = True
+                result_lines.append(f'<li style="margin:2px 0;">{ol_match.group(2)}</li>')
+                continue
+
+            # 普通行：关闭打开的列表
+            if in_ul:
+                result_lines.append('</ul>')
+                in_ul = False
+            if in_ol:
+                result_lines.append('</ol>')
+                in_ol = False
+
+            # 空行变间距
+            if not stripped:
+                result_lines.append('<br>')
+            else:
+                result_lines.append(f'{line}<br>')
+
+        # 关闭未闭合的列表
+        if in_ul:
+            result_lines.append('</ul>')
+        if in_ol:
+            result_lines.append('</ol>')
+
+        text = '\n'.join(result_lines)
+
+        # ── 4. 行内格式：粗体、斜体 ──
+        text = _re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
+        text = _re.sub(r'\*(.+?)\*', r'<i>\1</i>', text)
+
+        # ── 5. 还原代码块占位符 ──
+        for key, html_block in code_blocks.items():
+            text = text.replace(key, html_block)
+
+        return text
+
     def append_text_with_format(self, text, is_user=True):
         # Check if the text already contains HTML links (tool documentation, AI thoughts, data overview links, or any anchor tags)
         # Also skip URL processing for trial messages to avoid making numbers clickable
@@ -1975,19 +2144,22 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # Check if this is a processing status message (ends with "..." or contains "Executing the code")
         is_processing_status = message.endswith("...") or "Executing the code" in message
 
+        # 对 AI 的普通回复（非状态提示）应用 Markdown → HTML 转换
+        if is_user is False and not is_processing_status:
+            message = self._markdown_to_html(message)
+
         # Apply special styling for processing status messages and regular AI messages
         if is_processing_status and is_user is False:
             message_style = f"color: orange; font-style: italic; font-size: 90%;"
         elif is_user is False:
-            # Regular AI informational messages in green
-            message_style = f"color: green;"
+            # Regular AI informational messages
+            message_style = f"color: #2c3e50;"
         else:
             message_style = f"color: {color_message};"
 
         html = f'''
-            <div style= "text-align: left; padding: 10px; margin: 5px; border: 2px solid gray; border-radius: 10px; ">
-                <span style="color: {color_prefix};">{prefix}</span><span style="{message_style}">{message}</span>
-
+            <div style="text-align: left; padding: 10px; margin: 5px; border: 2px solid gray; border-radius: 10px;">
+                <span style="color: {color_prefix}; font-weight: bold;">{prefix}</span><div style="{message_style}">{message}</div>
             </div>
             '''
 
@@ -2793,7 +2965,70 @@ def classFactory(iface):
     """Load SpatialAnalysisAgentPlugin class."""
     return SpatialAnalysisAgentDockWidget(iface)
 
+class IntentClassifyThread(QThread):
+    """Lightweight thread for intent classification to avoid blocking UI."""
+    result_ready = pyqtSignal(str)  # emits 'CHAT' / 'GIS_TASK' / 'PLAN_MODIFY' / 'UNCLEAR'
 
+    def __init__(self, user_input, model_name, state='IDLE', plan_summary=''):
+        super().__init__()
+        self.user_input = user_input
+        self.model_name = model_name
+        self.state = state
+        self.plan_summary = plan_summary
+
+    def run(self):
+        try:
+            _sa_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'SpatialAnalysisAgent')
+            if _sa_dir not in sys.path:
+                sys.path.insert(0, _sa_dir)
+            from SpatialAnalysisAgent_helper import classify_intent
+            intent = classify_intent(
+                user_input=self.user_input,
+                model_name=self.model_name,
+                state=self.state,
+                plan_summary=self.plan_summary
+            )
+            self.result_ready.emit(intent)
+        except Exception as e:
+            print(f"[IntentClassifyThread] Error: {e}")
+            self.result_ready.emit('CHAT')
+
+
+class ChatAnswerThread(QThread):
+    """后台线程：调用 unified_llm_call 完成闲聊回复，避免阻塞 UI。"""
+    reply_ready = pyqtSignal(str)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, user_message, model_name):
+        super().__init__()
+        self.user_message = user_message
+        self.model_name = model_name
+
+    def run(self):
+        try:
+            _sa_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'SpatialAnalysisAgent')
+            if _sa_dir not in sys.path:
+                sys.path.insert(0, _sa_dir)
+            from SpatialAnalysisAgent_helper import unified_llm_call
+            response = unified_llm_call(
+                request_id=None,
+                messages=[
+                    {"role": "system",
+                     "content": "你是一个GIS助手，用简洁友好的语言回答用户问题。如果涉及GIS知识，给出专业但易懂的解释。"},
+                    {"role": "user", "content": self.user_message}
+                ],
+                model_name=self.model_name,
+                stream=False,
+                temperature=0.7
+            )
+            self.reply_ready.emit(response if response else "(empty response)")
+        except Exception as e:
+            print(f"[ChatAnswerThread] Error: {e}")
+            import traceback
+            traceback.print_exc()
+            self.error_occurred.emit(str(e))
+            
+            
 class ScriptThread(QThread):
     output_line = pyqtSignal(str)
     chatgpt_update = pyqtSignal(str)

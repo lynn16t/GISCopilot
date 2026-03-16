@@ -214,7 +214,47 @@ ToolSelect_requirements = [
 
 ]
 
+#*********************************************************************************************************************************************************************
+#--------------------------------- INTENT CLASSIFIER PROMPTS
 
+
+IDLE_INTENT_CLASSIFY_PROMPT = """You are an intent router for a QGIS spatial analysis assistant.
+Your ONLY task is to classify the user input into one of the following categories:
+
+CHAT — Casual talk, greetings, knowledge questions, concept explanations, parameter consultation
+  e.g. "你好" "缓冲区是什么" "南京在哪个投影带" "DEM分辨率一般多少合适"
+  e.g. "What is a buffer zone" "How to choose a projection"
+
+GIS_TASK — Requires calling QGIS tools to perform spatial analysis or data processing on actual data
+  e.g. "计算各区面积" "做500米缓冲区" "提取坡度大于15度的区域"
+  e.g. "把这个图层转成WGS84" "Calculate area for each district"
+
+UNCLEAR — You cannot determine the user's intent
+
+Currently loaded layers:
+{layer_info}
+
+User input: "{user_input}"
+
+Reply with CHAT, GIS_TASK, or UNCLEAR only. No explanation."""
+
+CONVERSING_INTENT_CLASSIFY_PROMPT = """You are an intent router for a QGIS spatial analysis assistant.
+The user is currently reviewing a spatial analysis plan. They may want to modify the plan, or just ask a question for reference.
+
+CHAT — The user is asking for knowledge, reference values, or advice, NOT issuing a modification command
+  e.g. "缓冲区一般设多大" "这个投影适合南京吗" "这两个工具有什么区别"
+  e.g. "DEM用30米的够吗" "What's the difference between clip and intersect"
+
+PLAN_MODIFY — The user is explicitly requesting changes to the current plan
+  e.g. "把缓冲区改成500米" "不要用这个工具，换成裁剪" "输出格式改成GeoJSON"
+  e.g. "不需要第三步" "那就500米吧" "Change the buffer to 500m"
+
+UNCLEAR — Cannot determine
+
+Current plan summary: {plan_summary}
+User input: "{user_input}"
+
+Reply with CHAT, PLAN_MODIFY, or UNCLEAR only. No explanation."""
 
 
 

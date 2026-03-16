@@ -1071,8 +1071,21 @@ def get_data_sample_text(file_path, file_type="csv", encoding="utf-8"):
         text = str(df.head(3))
 
     if file_type == "shp":
-        gdf = gpd.read_file(file_path)
-        text = str(gdf.head(2))  # .drop('geomtry')
+        try:
+            from qgis.core import QgsVectorLayer
+            layer = QgsVectorLayer(file_path, "temp_sample", "ogr")
+            if layer.isValid():
+                lines = []
+                for i, feat in enumerate(layer.getFeatures()):
+                    if i >= 2:
+                        break
+                    attrs = {field.name(): str(feat[field.name()]) for field in layer.fields()}
+                    lines.append(str(attrs))
+                text = "\n".join(lines)
+            else:
+                text = f"(Failed to open: {file_path})"
+        except Exception as e:
+            text = f"(Error reading shp: {e})"
 
     if file_type == "txt":
         with open(file_path, 'r', encoding=encoding) as f:
@@ -1479,7 +1492,100 @@ def Query_tuning(request_id, Query_tuning_prompt_str, model_name, stream, reason
     **kwargs
     )
 
+import re as _re
 
+# ── Hard rules ──
+_HARD_CHAT_PATTERNS = [
+    _re.compile(r'^(你好|hi|hello|嗨|早上好|晚上好|hey|嘿|good\s*morning|good\s*evening)', _re.IGNORECASE),
+    _re.compile(r'^(谢谢|好的|明白|收到|了解|ok|got\s*it|知道了|thanks|thank\s*you)', _re.IGNORECASE),
+    _re.compile(r'你(是谁|能做什么|叫什么|会什么)', _re.IGNORECASE),
+]
+_HARD_GIS_PATTERNS = [
+    _re.compile(r'(native:|qgis:|gdal:|grass7:|saga:)', _re.IGNORECASE),
+    _re.compile(r'(这个图层|当前图层|加载的数据|已有数据|这些数据|当前数据)', _re.IGNORECASE),
+]
+
+
+def get_layer_info() -> str:
+    """Collect loaded layer info from QGIS: name + type + field names (max 10)."""
+    try:
+        from qgis.core import QgsProject, QgsVectorLayer, QgsRasterLayer, QgsWkbTypes
+        layers = QgsProject.instance().mapLayers().values()
+        if not layers:
+            return "None"
+        lines = []
+        for layer in layers:
+            name = layer.name()
+            if isinstance(layer, QgsVectorLayer):
+                geom = QgsWkbTypes.displayString(layer.wkbType())
+                fields = [f.name() for f in layer.fields()][:10]
+                lines.append(f"- {name} (Vector/{geom}, Fields: {', '.join(fields)})")
+            elif isinstance(layer, QgsRasterLayer):
+                lines.append(f"- {name} (Raster)")
+            else:
+                lines.append(f"- {name} (Other)")
+        return '\n'.join(lines)
+    except Exception:
+        return "Unknown (failed to read QGIS layers)"
+
+
+def _parse_intent_result(llm_response: str, valid_labels: list) -> str:
+    """Extract the first matching label from LLM response text."""
+    text = llm_response.strip().upper()
+    for label in valid_labels:
+        if label in text:
+            return label
+    return 'CHAT'  # safe default
+
+
+def classify_intent(user_input: str, model_name: str,
+                    state: str = 'IDLE',
+                    plan_summary: str = '') -> str:
+    """
+    Two-layer intent classifier.
+    Layer 1: Hard rules (0ms) — intercepts definite cases.
+    Layer 2: LLM lightweight classification (1-3s) — semantic understanding.
+
+    Returns: 'CHAT' | 'GIS_TASK' | 'PLAN_MODIFY' | 'UNCLEAR'
+    """
+    text = user_input.strip()
+
+    # ── Layer 1: Hard rules ──
+    for pattern in _HARD_CHAT_PATTERNS:
+        if pattern.search(text):
+            return 'CHAT'
+    for pattern in _HARD_GIS_PATTERNS:
+        if pattern.search(text):
+            return 'GIS_TASK'
+
+    # ── Layer 2: LLM classification ──
+    layer_info = get_layer_info()
+
+    if state == 'CONVERSING':
+        prompt = constants.CONVERSING_INTENT_CLASSIFY_PROMPT.format(
+            plan_summary=plan_summary or 'N/A',
+            user_input=text
+        )
+        valid_labels = ['PLAN_MODIFY', 'UNCLEAR', 'CHAT']
+    else:
+        prompt = constants.IDLE_INTENT_CLASSIFY_PROMPT.format(
+            layer_info=layer_info,
+            user_input=text
+        )
+        valid_labels = ['GIS_TASK', 'UNCLEAR', 'CHAT']
+
+    try:
+        response = unified_llm_call(
+            request_id=None,
+            messages=[{"role": "user", "content": prompt}],
+            model_name=model_name,
+            stream=False,
+            temperature=0
+        )
+        return _parse_intent_result(response, valid_labels)
+    except Exception as e:
+        print(f"[Intent Classifier] LLM call failed: {e}, defaulting to CHAT")
+        return 'CHAT'
 
 
 
@@ -2172,17 +2278,8 @@ def _get_df_types_str(df):
     return types_str
 
 
-def see_vector(file_path):
-    gdf = gpd.read_file(file_path)
-    types_str = _get_df_types_str(gdf.drop(columns='geometry'))
-    # print(gdf.crs)
-    crs_summary = str(gdf.crs)  # will be "EPSG:4326", but the original information would be long
-    crs_summary = crs_summary.replace('\n', ' ')
-
-    # Format the metadata in a more readable way
-    meta_str = f"{types_str}\n\nCoordinate Reference System: {crs_summary}"
-
-    return meta_str
+# see_vector 已统一为 QGIS 原生 API 版本（在文件末尾），避免 geopandas/pyarrow 崩溃。
+# 如下是第一处旧定义（已删除），第二处在文件末尾。
 
 
 def see_raster(file_path, statistics=False, approx=False):
@@ -2446,48 +2543,40 @@ def _get_df_types_str(df):
     return types_str
 
 def see_vector(file_path):
-    gdf = gpd.read_file(file_path)
-    types_str = _get_df_types_str(gdf.drop(columns='geometry'))
-    # print(gdf.crs)
-    crs_summary = str(gdf.crs)  # will be "EPSG:4326", but the original information would be long
-    crs_summary = crs_summary.replace('\n', ' ')
+    """Read vector metadata using QGIS native API (avoids pyarrow/geopandas crash)."""
+    try:
+        from qgis.core import QgsVectorLayer, QgsWkbTypes
+        layer = QgsVectorLayer(file_path, "temp_inspect", "ogr")
+        if not layer.isValid():
+            return f"(Failed to open: {file_path})"
 
-    # Format the metadata in a more readable way
-    meta_str = f"{types_str}\n\nCoordinate Reference System: {crs_summary}"
+        fields = layer.fields()
+        column_lines = []
+        # Sample first feature for example values
+        sample_feat = None
+        for feat in layer.getFeatures():
+            sample_feat = feat
+            break
 
-    return meta_str
+        for field in fields:
+            name = field.name()
+            dtype = field.typeName()
+            sample_value = ""
+            if sample_feat:
+                sample_value = str(sample_feat[name])
+            column_lines.append(f"  - {name}: {dtype} (sample: {sample_value})")
 
-def see_raster(file_path, statistics=False, approx=False):
-    with rasterio.open(file_path) as dataset:
-        raster_str = _get_raster_str(dataset, statistics=statistics, approx=approx)
-    return raster_str
+        types_str = "Columns:\n" + "\n".join(column_lines)
 
+        crs = layer.crs()
+        crs_summary = crs.authid() if crs.isValid() else "unknown"
 
-def _get_raster_str(dataset, statistics=False, approx=False):  # receive rasterio object
-    raster_dict = dataset.meta
-    raster_dict["band_count"] = raster_dict.pop("count") # rename the key
-    raster_dict["bounds"] = dataset.bounds
-    if statistics:
-        band_stat_dict = {}
-        for i in range(1, raster_dict["band_count"] + 1):
-              # need time to do that
-            band_stat_dict[f"band_{i}"] = dataset.stats(indexes=i, approx=approx)
-        raster_dict["statistics"] = band_stat_dict
+        geom_type = QgsWkbTypes.displayString(layer.wkbType())
+        feature_count = layer.featureCount()
 
-    resolution = (dataset.transform[0], dataset.transform[4])
-    raster_dict["resolution"] = resolution
-    # print("dataset.crs:", dataset.crs)
-
-    crs = dataset.crs
-
-    if crs:
-        if dataset.crs.is_projected:
-            raster_dict["unit"] = dataset.crs.linear_units
-        else:
-            raster_dict["unit"] = "degree"
-    else:
-        raster_dict["Coordinate reference system"] = "unknown"
-    # print("dataset.crs:", dataset.crs)
-
-    raster_str = str(raster_dict)
-    return raster_str
+        meta_str = (f"{types_str}\n\n"
+                    f"Geometry: {geom_type}, Features: {feature_count}\n"
+                    f"Coordinate Reference System: {crs_summary}")
+        return meta_str
+    except Exception as e:
+        return f"(Error reading vector: {e})"
