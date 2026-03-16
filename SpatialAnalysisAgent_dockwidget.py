@@ -450,6 +450,14 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.agent.status_update.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False))
         self.agent.chat_response.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False))
         self.agent.error_occurred.connect(lambda msg: self.update_chatgpt_ans_textBrowser(f"Error: {msg}", is_user=False))
+
+        # Phase 3: 连接分析/执行阶段的输出信号
+        self.agent.execution_output.connect(self.update_output)
+        self.agent.graph_ready.connect(self._on_agent_graph_ready)
+        self.agent.code_ready.connect(self.update_code_editor)
+        self.agent.plan_ready.connect(self._on_agent_plan_ready)
+        self.agent.result_ready.connect(self._on_agent_result_ready)
+        self.agent.task_finished.connect(self._on_agent_task_finished)
         
     def initUI(self):
 
@@ -1536,9 +1544,9 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         #     self.update_chatgpt_ans_textBrowser(f"Please load the data to be used.", is_user=False)
         #     return  # Stop further execution if data path is required but empty
 
-        if not self.data_pathLineEdit.isEnabled() and not self.data_pathLineEdit.toPlainText().strip():
-            self.update_chatgpt_ans_textBrowser(f"Please load the data to be used.", is_user=False)
-            return  # Stop further execution if data path is required but empty
+        # 数据路径检查已移至 AgentController._run_idle_input()，
+        # 只在意图分类为 GIS 任务时才要求加载数据。
+        # 闲聊不需要数据。
 
         # Add initial processing message
         # self.update_chatgpt_ans_textBrowser("Initializing analysis...", is_user=False)
@@ -1565,7 +1573,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             self.update_chatgpt_ans_textBrowser("Analyzing the task (may take some time while GPT-5.1 is reasoning)...", is_user=False)
         else:
             self.update_chatgpt_ans_textBrowser("Analyzing the task...", is_user=False)
-        self.run_script()
+        # === Phase 3: 通过 AgentController 路由，替代 run_script() ===
+        self._run_via_agent()
 
     def user_feedback(self):
         """Handle user feedback from thumbs up, thumbs down, and feedback message buttons."""
@@ -2556,7 +2565,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             btn.hide()
 
         if state_name == "IDLE":
-            # 文本输入模式：显示输入框和发送按钮
+            # 文本输入模式：显示输入框和发送按钮，恢复全部控件
             self.action_buttons_widget.hide()
             self.task_LineEdit.show()
             self.task_LineEdit.setEnabled(True)
@@ -2564,6 +2573,9 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             self.run_button.show()
             self.run_button.setEnabled(True)
             self.interrupt_button.setEnabled(False)
+            self.clear_textboxesBtn.setEnabled(True)
+            self.data_pathLineEdit.setEnabled(True)
+            self.loadData.setEnabled(True)
 
         elif state_name == "ANALYZING":
             # 分析中：输入框禁用，显示中断按钮
@@ -2653,8 +2665,128 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.update_chatgpt_ans_textBrowser("任务完成！", is_user=True)
         self.agent.handle_user_action(UserAction.FINISH)
 
-    
-    
+    # ─── Phase 3: AgentController 路由方法 ───
+
+    def _run_via_agent(self):
+        """通过 AgentController 状态机执行任务，替代 run_script/ScriptThread"""
+        # 读取 UI 参数
+        self.OpenAI_key = self.get_openai_key()
+        self.model_name = self.modelNameComboBox.currentText()
+        self.task = self.task_LineEdit.toPlainText()
+        self.current_task = self.task
+        self.data_path = self.data_pathLineEdit.toPlainText()
+        self.workspace_directory = self.workspace_directoryLineEdit2.text()
+
+        is_review = self.review_checkbox.isChecked()
+
+        self.reasoning_effort_value = 'medium'
+        if self.model_name in ['gpt-5', 'gpt-5.1', 'gpt-5.2']:
+            self.reasoning_effort_value = self.reasoningEffortComboBox.currentText()
+
+        # 检查 API key（本地模型除外）
+        try:
+            current_script_dir = os.path.dirname(os.path.abspath(__file__))
+            sys.path.insert(0, os.path.join(current_script_dir, 'SpatialAnalysisAgent'))
+            from SpatialAnalysisAgent_ModelProvider import ModelProviderFactory
+            provider_name = ModelProviderFactory._model_providers.get(self.model_name, 'openai')
+            if provider_name != 'ollama' and not self.OpenAI_key:
+                self.update_chatgpt_ans_textBrowser("Enter your OpenAI API key or GIBD API key", is_user=False)
+                return
+        except ImportError:
+            if not self.OpenAI_key:
+                self.update_chatgpt_ans_textBrowser("Enter your OpenAI API key or GIBD API key", is_user=False)
+                return
+
+        # 任务/数据路径加入历史
+        if self.task not in self.task_history:
+            self.task_history.append(self.task)
+            self.task_completer.model().setStringList(self.task_history)
+        if self.data_path not in self.data_path_history:
+            self.data_path_history.append(self.data_path)
+            self.data_path_completer.model().setStringList(self.data_path_history)
+
+        # 设置 AgentController 参数
+        self.agent.set_task_params(
+            task=self.task,
+            data_path=self.data_path,
+            workspace_directory=self.workspace_directory,
+            model_name=self.model_name,
+            is_review=is_review,
+            reasoning_effort_value=self.reasoning_effort_value
+        )
+
+        # 清空输出区
+        self.CodeEditor.clear()
+        self.execution_output_text_edit.clear()
+        self.web_view.setHtml("")
+
+        # 禁用输入控件（状态机会通过 state_changed 信号管理）
+        self.run_button.setEnabled(False)
+        self.clear_textboxesBtn.setEnabled(False)
+        self.task_LineEdit.setEnabled(False)
+        self.data_pathLineEdit.setEnabled(False)
+        self.loadData.setEnabled(False)
+
+        # 触发状态机
+        self.agent.handle_user_action(UserAction.SEND_TASK, self.task)
+
+    def _on_agent_graph_ready(self, html_path):
+        """AgentController 生成工作流图后更新 WebView"""
+        if html_path and os.path.exists(html_path):
+            self.update_graph(html_path)
+
+    def _on_agent_plan_ready(self, plan_dict):
+        """AgentController 分析完成，方案已就绪"""
+        task_breakdown = plan_dict.get("task_breakdown", "")
+        selected_tools = plan_dict.get("selected_tools", [])
+        summary = (
+            f"Analysis plan is ready:\n"
+            f"Task breakdown: {task_breakdown[:300]}...\n"
+            f"Selected tools: {selected_tools}\n\n"
+            f"Please confirm the plan or suggest modifications."
+        )
+        self.update_chatgpt_ans_textBrowser(summary, is_user=False)
+
+        # 重新启用控件（按钮组由 _on_state_changed 管理）
+        self.clear_textboxesBtn.setEnabled(True)
+        self.data_pathLineEdit.setEnabled(True)
+        self.loadData.setEnabled(True)
+
+    def _on_agent_result_ready(self, result_dict):
+        """AgentController 执行完成，结果已就绪"""
+        success = result_dict.get("success", False)
+        output = result_dict.get("output", "")
+        error_msg = result_dict.get("error_message", "")
+        data_changes = result_dict.get("data_changes", {})
+
+        if success:
+            summary = "Code execution succeeded!"
+            added = data_changes.get("added", [])
+            if added:
+                names = [l.get("name", "?") for l in added]
+                summary += f"\nNew layers created: {names}"
+        else:
+            summary = f"Code execution failed: {error_msg}"
+
+        summary += "\n\nPlease select the next action."
+        self.update_chatgpt_ans_textBrowser(summary, is_user=False)
+
+        # 显示执行输出
+        if output:
+            self.append_execution_output(output[:2000])
+
+        self.clear_textboxesBtn.setEnabled(True)
+        self.data_pathLineEdit.setEnabled(True)
+        self.loadData.setEnabled(True)
+
+    def _on_agent_task_finished(self, success):
+        """AgentController 任务完成，回到 IDLE"""
+        self.run_button.setEnabled(True)
+        self.clear_textboxesBtn.setEnabled(True)
+        self.task_LineEdit.setEnabled(True)
+        self.data_pathLineEdit.setEnabled(True)
+        self.loadData.setEnabled(True)
+
 
 # The classFactory function must be placed at the end of this file
 def classFactory(iface):
@@ -3201,5 +3333,3 @@ class RunGeneratedCodeThread(QThread):
             generated_output = match.group(0)
             if generated_output:
                 self.report_ready.emit(generated_output)
-
-

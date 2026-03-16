@@ -23,6 +23,39 @@
  This script initializes the plugin, making it known to QGIS.
 """
 
+# Guard: ensure sys.stderr/stdout are not None before any library imports.
+# QGIS Python environment sometimes sets these to None, which crashes
+# numpy, pandas, and other libraries that write warnings during import.
+import sys as _sys, io as _io
+if _sys.stderr is None:
+    _sys.stderr = _io.StringIO()
+if _sys.stdout is None:
+    _sys.stdout = _io.StringIO()
+
+# Pre-import libraries whose DLLs crash when first loaded in a worker thread.
+# pyarrow in particular causes "Windows fatal exception: access violation"
+# if its native DLL is first loaded outside the main thread.
+# We suppress the QGIS exception hook during these imports so that
+# compatibility warnings (e.g. numpy version mismatch) don't pop up
+# as error dialogs — they are non-fatal for plugin loading.
+try:
+    _orig_excepthook = _sys.excepthook
+    _sys.excepthook = lambda *args: None  # suppress during pre-import
+    import warnings as _warnings
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore")
+        try:
+            import pyarrow  # noqa: F401
+        except Exception:
+            pass
+        try:
+            import geopandas  # noqa: F401
+        except Exception:
+            pass
+    _sys.excepthook = _orig_excepthook
+except Exception:
+    pass
+
 
 # noinspection PyPep8Naming
 def classFactory(iface):  # pylint: disable=invalid-name
