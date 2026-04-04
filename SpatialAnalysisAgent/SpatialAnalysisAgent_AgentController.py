@@ -29,6 +29,12 @@ from typing import Optional, Dict, Any, List
 
 from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
+# Phase 4: 输出解析和风控门
+from SpatialAnalysisAgent_OutputParser import (
+    AgentOutputParser, OutputType, ParsedOutput
+)
+from SpatialAnalysisAgent_GuardGate import GuardGate
+
 
 # ============================================================
 # 状态定义
@@ -173,17 +179,29 @@ class AgentController(QObject):
 
     chat_response = pyqtSignal(str)
 
+    # Phase 4: 知识库更新请求信号
+    knowledge_update_requested = pyqtSignal(str)
+
     error_occurred = pyqtSignal(str)
     task_finished = pyqtSignal(bool)
 
-    def __init__(self, session=None):
+    def __init__(self, session=None, knowledge_manager=None):
         super().__init__()
 
-        if session is not None:
+        # Phase 3: 使用新的 SessionContext，传入 knowledge_manager
+        from SpatialAnalysisAgent_SessionContext import SessionContext
+
+        if session is not None and isinstance(session, SessionContext):
             self.session = session
         else:
-            from SpatialAnalysisAgent_SessionContext import SessionContext
-            self.session = SessionContext()
+            # 创建新的 SessionContext，传入 knowledge_manager
+            self.session = SessionContext(knowledge_manager=knowledge_manager)
+
+        self.knowledge_manager = knowledge_manager
+
+        # Phase 4: 初始化输出解析器和风控门
+        self.output_parser = AgentOutputParser()
+        self.guard_gate = GuardGate()
 
         self._state = AgentState.IDLE
         self._is_running = True
@@ -338,7 +356,11 @@ class AgentController(QObject):
     def _handle_new_task(self, task: str):
         """处理 IDLE 状态的用户输入：先分类意图，再决定走分析还是闲聊"""
         self.task = task
-        self.session.add_message("user", task)
+
+        # Phase 3: 重置 SessionContext 并设置任务
+        self.session.reset()
+        self.session.set_task(task)
+
         self.status_update.emit("正在理解您的意图...")
         self._generate_request_id()
         # 在工作线程中先分类，再路由
@@ -678,56 +700,96 @@ No explanation, no punctuation, just the single word."""
         # ====== 步骤 3: 任务分解（Query Tuning）======
         self.status_update.emit("正在分解任务...")
 
-        Query_tuning_prompt_str = helper.create_Query_tuning_prompt(
-            task=self.task, data_overview=data_overview)
-        print(Query_tuning_prompt_str)
+        # Phase 3: 使用新模式
+        self.session.set_data_overview(data_overview)
+
+        step_instruction = helper.build_query_tuning_instruction(task=self.task)
+        messages = self.session.build_messages(
+            step="query_tuning",
+            step_instruction=step_instruction,
+            step_role=constants.Query_tuning_role
+        )
 
         print("TASK_BREAKDOWN:", end="")
-        task_breakdown = helper.Query_tuning(
+        task_breakdown = helper.unified_llm_call(
             request_id=self._request_id,
-            Query_tuning_prompt_str=Query_tuning_prompt_str,
+            messages=messages,
             model_name=self.model_name,
             stream=True,
-            reasoning_effort=self.reasoning_effort_value)
+            reasoning_effort=self.reasoning_effort_value
+        )
         print("\n_")
 
-        self.session.add_message(
-            "assistant", f"Task breakdown:\n{task_breakdown}")
+        # 记录结果到 SessionContext
+        self.session.add_message("assistant", f"Task breakdown:\n{task_breakdown}")
         self.task_breakdown_ready.emit(task_breakdown)
 
         if not self._is_running:
             return
 
-        # ====== 步骤 4: 工具选择 ======
-        self.status_update.emit("正在选择工具...")
+        # ====== 步骤 4: 工具选择（结构化执行计划）======
+        self.status_update.emit("正在规划执行步骤...")
         print("=" * 56)
-        print("AI IS SELECTING THE APPROPRIATE TOOL(S) ...")
+        print("AI IS PLANNING THE EXECUTION STEPS ...")
         print("=" * 56)
 
-        ToolSelect_prompt_str = helper.create_ToolSelect_prompt(
-            task=task_breakdown, data_path=data_overview)
+        # Phase 3: 使用新模式，返回结构化 JSON 计划
+        step_instruction = helper.build_tool_selection_instruction(task_breakdown=task_breakdown)
+        messages = self.session.build_messages(
+            step="tool_selection",
+            step_instruction=step_instruction,
+            step_role=constants.ToolSelect_role
+        )
 
-        print("SELECTED TOOLS:", end="")
-        Selected_Tools_reply = helper.tool_select(
+        print("EXECUTION PLAN:", end="")
+        plan_response = helper.unified_llm_call(
             request_id=self._request_id,
-            ToolSelect_prompt_str=ToolSelect_prompt_str,
+            messages=messages,
             model_name=operation_model,
             stream=True,
-            reasoning_effort=self.reasoning_effort_value)
+            reasoning_effort=self.reasoning_effort_value
+        )
+        print("\n")
 
-        Refined = helper.extract_dictionary_from_response(
-            response=Selected_Tools_reply)
-        try:
-            Selected_Tools_Dict = ast.literal_eval(Refined)
-            print(f"\nSELECTED TOOLS: {Selected_Tools_Dict}\n")
-        except (SyntaxError, ValueError) as e:
-            print(f"Error parsing the dictionary: {e}")
-            Selected_Tools_Dict = {'Selected tool': []}
+        # Phase 4: 使用风控门处理工具选择输出
+        action = self.process_llm_output(plan_response)
 
-        selected_tools = Selected_Tools_Dict.get('Selected tool', [])
-        if isinstance(selected_tools, str):
-            selected_tools = [selected_tools]
-        print(selected_tools)
+        if action.action_type == "confirm_plan":
+            # 成功解析为结构化计划
+            structured_plan = action.data["plan"]
+            plan_display_text = action.data["plan_text"]
+
+            print(f"Structured plan parsed: {structured_plan}")
+
+            # 提取工具 ID 列表
+            selected_tools = helper.extract_tool_ids_from_plan(structured_plan)
+            print(f"Extracted tools: {selected_tools}")
+
+            # 保存完整的结构化计划到 SessionContext
+            import json
+            plan_text = json.dumps(structured_plan, indent=2, ensure_ascii=False)
+            self.session.set_plan(plan_text)
+
+            # 在聊天框展示格式化的 plan
+            self.status_update.emit(plan_display_text)
+
+        else:
+            # 未能解析为 PLAN 类型，回退到旧格式
+            print(f"[Warning] Tool selection did not return PLAN type, falling back...")
+            print("Falling back to old format...")
+
+            # 回退到旧格式
+            Refined = helper.extract_dictionary_from_response(response=plan_response)
+            try:
+                Selected_Tools_Dict = ast.literal_eval(Refined)
+                selected_tools = Selected_Tools_Dict.get('Selected tool', [])
+                if isinstance(selected_tools, str):
+                    selected_tools = [selected_tools]
+                # 保存简单格式的 plan
+                self.session.set_plan(f"Selected tools: {selected_tools}")
+            except Exception:
+                selected_tools = []
+                self.session.set_plan("Tool selection failed")
 
         self.tools_selected.emit(str(selected_tools))
 
@@ -888,35 +950,63 @@ No explanation, no punctuation, just the single word."""
         data_overview = self._analysis_result.get(
             "data_overview", self.data_path.split('\n'))
 
-        # 拍图层快照
-        snapshot_before = self.session.take_layer_snapshot()
+        # Phase 3: 图层快照功能已移除（简化 SessionContext）
+        # snapshot_before = self.session.take_layer_snapshot()
 
         # ====== 步骤 7a: 生成代码 ======
         self.status_update.emit("正在生成代码...")
 
-        operation_prompt_str = helper.create_operation_prompt(
-            task=task_breakdown,
-            data_path=data_overview,
-            workspace_directory=self.workspace_directory,
-            selected_tools=selected_tool_IDs_list,
-            documentation_str=combined_documentation_str)
-        print(f"OPERATION PROMPT: {operation_prompt_str}")
-        print('\n---------- AI IS GENERATING THE OPERATION'
-              ' CODE ----------\n')
-        print("GENERATED CODE:", end="")
+        # Phase 3: 使用新模式
+        print('\n---------- AI IS GENERATING THE OPERATION CODE ----------\n')
 
-        LLM_reply_str = helper.generate_operation_code(
+        # 构建步骤指令
+        step_instruction = helper.build_code_generation_instruction(
+            task_description=task_breakdown,
+            data_path='\n'.join([f"{idx + 1}. {line}" for idx, line in enumerate(data_overview)]),
+            selected_tool=', '.join(selected_tool_IDs_list) if selected_tool_IDs_list else 'N/A',
+            selected_tool_ID=', '.join(selected_tool_IDs_list) if selected_tool_IDs_list else 'N/A',
+            documentation_str=combined_documentation_str
+        )
+
+        # 通过 SessionContext 组装上下文（会自动注入 current_plan）
+        messages = self.session.build_messages(
+            step="code_generation",
+            step_instruction=step_instruction,
+            step_role=constants.operation_role
+        )
+
+        print("GENERATED CODE:", end="")
+        LLM_reply_str = helper.unified_llm_call(
             request_id=self._request_id,
-            operation_prompt_str=operation_prompt_str,
+            messages=messages,
             model_name=self.model_name,
             stream=True,
-            reasoning_effort=self.reasoning_effort_value)
+            reasoning_effort=self.reasoning_effort_value
+        )
 
-        print("\n ------------ GENERATED CODE ------------\n")
-        print("```python")
-        extracted_code = helper.extract_code_from_str(
-            LLM_reply_str, self.task)
-        print("```")
+        # Phase 4: 使用风控门处理 LLM 输出
+        action = self.process_llm_output(LLM_reply_str)
+
+        if action.action_type == "show_code":
+            extracted_code = action.data["code"]
+            feedback = action.data["feedback_message"]
+
+            print("\n ------------ GENERATED CODE ------------\n")
+            print("```python")
+            print(extracted_code)
+            print("```")
+
+            # 聊天框显示反馈消息（代码不进聊天框）
+            self.status_update.emit(feedback)
+        else:
+            # 意料之外的输出类型（代码生成步骤应该总是返回代码）
+            # 回退：使用旧的提取逻辑
+            print("\n[Warning] Code generation did not return CODE type, falling back...")
+            extracted_code = helper.extract_code_from_str(LLM_reply_str, self.task)
+            print("\n ------------ GENERATED CODE ------------\n")
+            print("```python")
+            print(extracted_code)
+            print("```")
 
         if not self._is_running:
             return
@@ -926,25 +1016,41 @@ No explanation, no punctuation, just the single word."""
             self.status_update.emit("正在审查代码...")
             print("\n ---- AI IS REVIEWING THE GENERATED CODE ----")
 
-            crp = helper.code_review_prompt(
+            # Phase 3: 使用新模式
+            step_instruction = helper.build_code_review_instruction(
                 extracted_code=extracted_code,
-                data_path=data_overview,
-                selected_tool_dict=selected_tool_IDs_list,
-                workspace_directory=self.workspace_directory,
-                documentation_str=combined_documentation_str)
+                data_path='\n'.join([f"{idx + 1}. {line}" for idx, line in enumerate(data_overview)]),
+                selected_tools=', '.join(selected_tool_IDs_list) if selected_tool_IDs_list else 'N/A',
+                documentation_str=combined_documentation_str
+            )
 
-            review_str = helper.code_review(
+            messages = self.session.build_messages(
+                step="code_review",
+                step_instruction=step_instruction,
+                step_role=constants.operation_code_review_role
+            )
+
+            review_str = helper.unified_llm_call(
                 request_id=self._request_id,
-                code_review_prompt_str=crp,
+                messages=messages,
                 model_name=self.model_name,
                 stream=True,
-                reasoning_effort=self.reasoning_effort_value)
+                reasoning_effort=self.reasoning_effort_value
+            )
+
+            # Phase 4: 使用风控门处理审查输出
+            review_action = self.process_llm_output(review_str)
+
+            if review_action.action_type == "show_code":
+                reviewed_code = review_action.data["code"]
+            else:
+                # 回退：使用旧的提取逻辑
+                reviewed_code = helper.extract_code_from_str(review_str, task_explanation)
 
             print("\n\n")
             print("------------ REVIEWED CODE ------------\n")
             print("```python")
-            reviewed_code = helper.extract_code_from_str(
-                review_str, task_explanation)
+            print(reviewed_code)
             print("```")
 
             final_code = reviewed_code
@@ -962,9 +1068,11 @@ No explanation, no punctuation, just the single word."""
 
         # ====== 步骤 7c: 执行代码（含自动调试）======
         self.status_update.emit("正在执行代码...")
-        print(f"SESSION: Layer snapshot taken, "
-              f"{len(snapshot_before.layers)} layers recorded")
 
+        # Phase 3: 记录要执行的代码到 SessionContext
+        self.session.add_executed_code(final_code)
+
+        # Phase 3: 传入 SessionContext 以支持新的 debug 模式
         code, output, error_collector = helper.execute_complete_program(
             request_id=self._request_id,
             code=final_code,
@@ -977,7 +1085,8 @@ No explanation, no punctuation, just the single word."""
             workspace_directory=self.workspace_directory,
             review=self.is_review,
             stream=True,
-            reasoning_effort=self.reasoning_effort_value)
+            reasoning_effort=self.reasoning_effort_value,
+            session_context=self.session)
 
         execution_success = (
             code is not None and len(code.strip()) > 0
@@ -986,25 +1095,16 @@ No explanation, no punctuation, just the single word."""
         if error_collector:
             error_msg = error_collector[-1].get("error_message", "")
 
-        self.session.add_result(
-            code=code or "",
-            success=execution_success,
-            output=output or "",
-            error_message=error_msg,
-            snapshot_before=snapshot_before)
+        # Phase 3: 构建结果字符串并记录到 SessionContext
+        result_parts = []
+        result_parts.append(f"Status: {'SUCCESS' if execution_success else 'FAILED'}")
+        if output:
+            result_parts.append(f"Output:\n{output}")
+        if error_msg:
+            result_parts.append(f"Error: {error_msg}")
 
-        if self.session.results:
-            last_result = self.session.results[-1]
-            added = last_result.data_changes.get("added", [])
-            if added:
-                layer_names = [l.get("name", "?") for l in added]
-                print(f"SESSION: New layers created: {layer_names}")
-            print(f"SESSION: Execution recorded. "
-                  f"Total: {len(self.session.results)} executions")
-
-        self.session.add_message(
-            "assistant",
-            f"代码执行{'成功' if execution_success else '失败'}。")
+        result_str = "\n\n".join(result_parts)
+        self.session.add_result(result_str)
 
         generated_code = code or final_code
         print("CODE_READY_URLENCODED2:" + urllib.parse.quote(generated_code))
@@ -1021,8 +1121,8 @@ No explanation, no punctuation, just the single word."""
             "output": output or "",
             "error_message": error_msg,
             "error_collector": error_collector,
-            "data_changes": (self.session.results[-1].data_changes
-                             if self.session.results else {}),
+            # Phase 3: data_changes 功能已移除（简化 SessionContext）
+            "data_changes": {},
         }
         self.state = AgentState.RESULT_READY
         self.result_ready.emit(result_info)
@@ -1151,6 +1251,42 @@ No explanation, no punctuation, just the single word."""
                 self.plan_ready.emit(self.session.current_plan)
             else:
                 self.state = AgentState.IDLE
+
+    # ========================
+    # Phase 4: 输出处理（OutputParser + GuardGate）
+    # ========================
+
+    def process_llm_output(self, response: str) -> GuardGate.Action:
+        """
+        统一处理 LLM 输出：解析类型 → 风控门决策 → 返回 Action。
+
+        由 AgentController 的各步骤调用，也由未来的对话循环调用。
+
+        Args:
+            response: LLM 的原始回复
+
+        Returns:
+            GuardGate.Action 对象，包含处理决策
+        """
+        parsed = self.output_parser.parse(response)
+        action = self.guard_gate.decide(parsed)
+        return action
+
+    def handle_knowledge_update_action(self, action: GuardGate.Action):
+        """
+        处理知识库更新建议。
+
+        由对话循环调用（Phase 5），当 AI 建议更新知识库时触发。
+        本阶段只写逻辑，不接 UI。
+
+        Args:
+            action: GuardGate 返回的 Action 对象
+        """
+        suggestion = action.data.get("suggestion", "")
+
+        # 发信号到 UI 层请求确认
+        # （Phase 5 中实现信号连接）
+        self.knowledge_update_requested.emit(suggestion)
 
     # ========================
     # 反馈发送

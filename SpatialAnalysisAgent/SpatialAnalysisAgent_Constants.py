@@ -605,3 +605,76 @@ class Data(BaseModel):
 
 class Data_locations(BaseModel):
     data_locations: list[Data]
+
+
+# ============================================================================
+# Phase 3: 结构化工具选择输出格式
+# ============================================================================
+
+structured_tool_selection_output_format = """
+You MUST respond in the following JSON format only. No explanation outside JSON.
+{
+  "steps": [
+    {
+      "step_number": 1,
+      "operation": "Brief description of this step",
+      "tool_id": "algorithm_id e.g. native:buffer",
+      "input_layer": "actual filename from Data Overview",
+      "key_parameters": {
+        "PARAM_NAME": "value"
+      },
+      "output_description": "What this step produces"
+    }
+  ]
+}
+
+Rules:
+- input_layer must be an actual filename from the Data Overview
+- key_parameters should include only the most important 2-3 parameters
+- For chained operations, the next step's input_layer should reference the previous step's output
+- If new fields are created, specify them in key_parameters or describe in output_description
+"""
+
+structured_tool_selection_example_simple = """{
+  "steps": [
+    {
+      "step_number": 1,
+      "operation": "Create 500m buffer around schools",
+      "tool_id": "native:buffer",
+      "input_layer": "schools.shp",
+      "key_parameters": {
+        "DISTANCE": 500,
+        "SEGMENTS": 5
+      },
+      "output_description": "Buffer zones around all schools"
+    }
+  ]
+}"""
+
+structured_tool_selection_example_complex = """{
+  "steps": [
+    {
+      "step_number": 1,
+      "operation": "Filter counties with rainfall > 2.5 inches",
+      "tool_id": "native:extractbyattribute",
+      "input_layer": "PA_counties.shp",
+      "key_parameters": {
+        "FIELD": "annual_rainfall",
+        "OPERATOR": ">",
+        "VALUE": "2.5"
+      },
+      "output_description": "Counties meeting rainfall criteria"
+    },
+    {
+      "step_number": 2,
+      "operation": "Calculate area of selected counties",
+      "tool_id": "native:fieldcalculator",
+      "input_layer": "step_1_output",
+      "key_parameters": {
+        "FIELD_NAME": "area_sqkm",
+        "FORMULA": "$area / 1000000"
+      },
+      "output_description": "Counties with calculated area field"
+    }
+  ]
+}"""

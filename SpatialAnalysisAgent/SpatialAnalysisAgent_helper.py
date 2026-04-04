@@ -115,37 +115,45 @@ def generate_task_name_with_model_provider(request_id, model_name, stream, task_
         **kwargs)
 
 
-def create_Query_tuning_prompt(task, data_overview):
+def create_Query_tuning_prompt(task, data_overview, knowledge_text=""):
     Query_tuning_requirement_str = '\n'.join(
         [f"- {line}" for idx, line in enumerate(constants.Query_tuning_requirement)])
 
     Query_tuning_instructions_str = '\n'.join(
         [f"{idx + 1}. {line}" for idx, line in enumerate(constants.Query_tuning_instructions)])
 
-    data_overview_str = '\n'.join([f"{idx + 1}. {line}" for idx, line in enumerate(data_overview)])
+    data_overview_str = '\n'.join(
+        [f"{idx + 1}. {line}" for idx, line in enumerate(data_overview)])
 
     Output_Sample_str = '\n'.join(
         [f"{line}" for idx, line in enumerate(constants.Output_Sample)])
 
+    knowledge_section = ""
+    if knowledge_text:
+        knowledge_section = f"""
+    Project Knowledge:
+    {knowledge_text}
+"""
+
     prompt = f"""{constants.Query_tuning_role}
 
-{constants.Query_tuning_prefix}
+    {constants.Query_tuning_prefix}
 
-REQUIREMENTS:
-{Query_tuning_requirement_str}
+    REQUIREMENTS:
+    {Query_tuning_requirement_str}
 
-INSTRUCTIONS:
-{Query_tuning_instructions_str}
+    INSTRUCTIONS:
+    {Query_tuning_instructions_str}
 
-Data Overview:
-{data_overview_str}
+    Data Overview:
+    {data_overview_str}
+{knowledge_section}
+    User Query:
+    "{task}"
 
-User Query:
-"{task}"
-
-Output Sample:
-{Output_Sample_str}
-"""
+    Output Sample:
+    {Output_Sample_str}
+    """
 
     return prompt
 
@@ -251,7 +259,7 @@ def code_review(request_id, code_review_prompt_str, model_name, stream, reasonin
 
 # def get_code_for_operation(task_description, data_path, selected_tool, selected_tool_ID, documentation_str, review =True):
 def get_code_for_operation(model_name, task_description, data_path, selected_tool, selected_tool_ID, selected_tool_dict, documentation_str,
-                           review=True, stream=True):
+                           review=True, stream=True, knowledge_text=""):
     """
     Generate operation code using unified LLM call.
     Supports: OpenAI proxy, GPT-5, Ollama, and normal OpenAI
@@ -259,8 +267,13 @@ def get_code_for_operation(model_name, task_description, data_path, selected_too
     operation_requirement_str = '\n'.join(
         [f"{idx + 1}. {line}" for idx, line in enumerate(constants.operation_requirement)])
 
+    knowledge_section = ""
+    if knowledge_text:
+        knowledge_section = f"Project Knowledge:\n{knowledge_text}\n\n"
+
     user_prompt = f"Your mission: {constants.operation_task_prefix}: {task_description}\n\n" + \
-                  f"Using the following data paths: {data_path}\n" + \
+                  f"Using the following data paths: {data_path}\n\n" + \
+                  f"{knowledge_section}" + \
                   f"Selected tool: {selected_tool}\n" + \
                   f'{selected_tool_ID} Documentation: \n{documentation_str}\n' + \
                   f'Requirements: \n{operation_requirement_str}'
@@ -277,10 +290,7 @@ def get_code_for_operation(model_name, task_description, data_path, selected_too
         temperature=1
     )
 
-    # Extract code from the string response
     extracted_code = extract_code_from_str(response_str)
-
-    # Debugging: Print the operation_code to ensure it was extracted correctly
     print(f"Extracted Operation Code: {extracted_code}")
 
     if review:
@@ -632,7 +642,7 @@ def extract_code_from_str(LLM_reply_str, verbose=False):
 
 def execute_complete_program(request_id, code: str, try_cnt: int, task: str, model_name: str, reasoning_effort_value:str, documentation_str: str,  data_path,
                              workspace_directory, stream,
-                             review=True, reasoning_effort=None) -> (str, str):
+                             review=True, reasoning_effort=None, session_context=None) -> (str, str):
     count = 0
     output_capture = io.StringIO()
     original_stdout = sys.stdout  # Save the original stdout
@@ -691,27 +701,39 @@ def execute_complete_program(request_id, code: str, try_cnt: int, task: str, mod
                 print(f"Failed to execute and debug the code within {try_cnt} times.")
                 return code, output_capture.getvalue(), error_collector
 
-            debug_prompt = get_debug_prompt(exception=err, code=code, task=task, data_path= data_path, documentation_str=documentation_str)
             print("=" * 56)
             print("AI IS DEBUGGING THE CODE...")
             print("=" * 56)
-            # Use the same streaming approach that works for code generation
-            # Create a LangChain model for debugging (same as code generation, but without printing config)
-            # debug_model = ai_model(model_name=model_name, reasoning_effort_value=reasoning_effort_value, OpenAI_key=get_openai_key(model_name))
 
-            # Format the debug prompt like other prompts
-            formatted_debug_prompt = f"{constants.debug_role}\n\n{debug_prompt}"
+            # Phase 3: 使用 SessionContext（如果提供）
+            if session_context is not None:
+                # 新模式：通过 SessionContext 构建上下文
+                step_instruction = build_debug_instruction(
+                    code=code,
+                    error_msg=str(err),
+                    documentation_str=documentation_str
+                )
 
-            # Use the same successful streaming method as code generation
+                messages = session_context.build_messages(
+                    step="debug",
+                    step_instruction=step_instruction,
+                    step_role=constants.debug_role
+                )
+            else:
+                # 旧模式：直接构建 prompt（向后兼容）
+                debug_prompt = get_debug_prompt(
+                    exception=err, code=code, task=task,
+                    data_path=data_path, documentation_str=documentation_str
+                )
+                formatted_debug_prompt = f"{constants.debug_role}\n\n{debug_prompt}"
+                messages = [{"role": "user", "content": formatted_debug_prompt}]
+
             print("DEBUGGING RESPONSE:", end="", flush=True)
-            # debug_response_str = asyncio.run(stream_llm_response(debug_model, formatted_debug_prompt))
 
             try:
                 debug_response_str = unified_llm_call(
                     request_id=request_id,
-                    messages=[
-                        {"role": "user", "content": formatted_debug_prompt},
-                    ],
+                    messages=messages,
                     model_name=model_name,
                     stream=stream,
                     **kwargs
@@ -2580,3 +2602,268 @@ def see_vector(file_path):
         return meta_str
     except Exception as e:
         return f"(Error reading vector: {e})"
+
+
+# ============================================================================
+# Phase 3: 新的步骤指令构建函数（用于 SessionContext.build_messages()）
+# ============================================================================
+
+def build_query_tuning_instruction(task: str) -> str:
+    """
+    构建 Query Tuning 步骤指令
+    只返回该步骤特有的指令文本。
+    角色、知识库、数据概览、对话历史由 SessionContext 统一注入。
+    """
+    Query_tuning_requirement_str = '\n'.join(
+        [f"- {line}" for idx, line in enumerate(constants.Query_tuning_requirement)])
+
+    Query_tuning_instructions_str = '\n'.join(
+        [f"{idx + 1}. {line}" for idx, line in enumerate(constants.Query_tuning_instructions)])
+
+    Output_Sample_str = '\n'.join(
+        [f"{line}" for idx, line in enumerate(constants.Output_Sample)])
+
+    instruction = f"""{constants.Query_tuning_prefix}
+
+REQUIREMENTS:
+{Query_tuning_requirement_str}
+
+INSTRUCTIONS:
+{Query_tuning_instructions_str}
+
+User Query:
+"{task}"
+
+Output Sample:
+{Output_Sample_str}
+"""
+    return instruction
+
+
+def build_tool_selection_instruction(task_breakdown: str) -> str:
+    """
+    构建 Tool Selection 步骤指令
+    输出格式升级为结构化执行计划（JSON）
+    """
+    ToolSelect_requirement_str = '\n'.join(
+        [f"{idx + 1}. {line}" for idx, line in enumerate(constants.ToolSelect_requirements)])
+
+    instruction = f"""{constants.ToolSelect_prefix}
+
+Task breakdown: {task_breakdown}
+
+Requirements:
+{ToolSelect_requirement_str}
+
+Customized tools:
+{constants.tools_index}
+
+{constants.structured_tool_selection_output_format}
+
+Example for simple task:
+{constants.structured_tool_selection_example_simple}
+
+Example for complex task:
+{constants.structured_tool_selection_example_complex}
+"""
+    return instruction
+
+
+def build_code_generation_instruction(
+    task_description: str,
+    data_path: str,
+    selected_tool: str,
+    selected_tool_ID: str,
+    documentation_str: str
+) -> str:
+    """
+    构建 Code Generation 步骤指令
+    注意：current_plan（结构化执行计划）由 SessionContext 在 system message 的动态部分自动注入
+    """
+    operation_requirement_str = '\n'.join(
+        [f"{idx + 1}. {line}" for idx, line in enumerate(constants.operation_requirement)])
+
+    instruction = f"""{constants.operation_task_prefix}
+
+Task: {task_description}
+
+Data path: {data_path}
+
+Selected tool: {selected_tool}
+Tool ID: {selected_tool_ID}
+
+Tool documentation:
+{documentation_str}
+
+Requirements:
+{operation_requirement_str}
+"""
+    return instruction
+
+
+def build_code_review_instruction(
+    extracted_code: str,
+    data_path: str,
+    selected_tools: str,
+    documentation_str: str
+) -> str:
+    """
+    构建 Code Review 步骤指令
+    """
+    operation_code_review_requirement_str = '\n'.join(
+        [f"{idx + 1}. {line}" for idx, line in enumerate(constants.operation_code_review_requirement)])
+
+    instruction = f"""{constants.operation_code_review_task_prefix}
+
+The code to review:
+----------
+{extracted_code}
+----------
+
+Data properties:
+{data_path}
+
+Selected tool(s): {selected_tools}
+
+Tool documentation:
+{documentation_str}
+
+Requirements:
+{operation_code_review_requirement_str}
+"""
+    return instruction
+
+
+def build_debug_instruction(
+    code: str,
+    error_msg: str,
+    documentation_str: str = ""
+) -> str:
+    """
+    构建 Debug 步骤指令
+    使用动态调试建议
+    """
+    debug_requirement_str = '\n'.join(
+        [f"{idx + 1}. {line}" for idx, line in enumerate(constants.get_smart_debug_requirements(error_msg))])
+
+    instruction = f"""{constants.debug_task_prefix}
+
+Error message:
+{error_msg}
+
+Failed code:
+```python
+{code}
+```
+
+Tool documentation (if relevant):
+{documentation_str}
+
+Requirements:
+{debug_requirement_str}
+"""
+    return instruction
+
+
+def parse_structured_plan(llm_response: str) -> dict:
+    """
+    从 LLM 响应中提取结构化执行计划 JSON
+
+    Args:
+        llm_response: LLM 的原始响应文本
+
+    Returns:
+        解析后的 JSON 字典
+
+    Raises:
+        json.JSONDecodeError: JSON 解析失败
+    """
+    import json
+
+    # 清理 markdown 代码块标记
+    text = llm_response.strip()
+    if text.startswith('```json'):
+        text = text[7:]
+    elif text.startswith('```'):
+        text = text[3:]
+    if text.endswith('```'):
+        text = text[:-3]
+    text = text.strip()
+
+    # 解析 JSON
+    plan = json.loads(text)
+    return plan
+
+
+def extract_tool_ids_from_plan(plan: dict) -> list:
+    """
+    从结构化计划中提取工具 ID 列表
+
+    Args:
+        plan: 结构化计划字典
+
+    Returns:
+        工具 ID 列表，如 ["native:buffer", "native:fieldcalculator"]
+    """
+    return [step["tool_id"] for step in plan.get("steps", [])]
+
+
+def unified_llm_call(
+    request_id: str,
+    messages: list,
+    model_name: str,
+    stream: bool = True,
+    reasoning_effort: str = "medium"
+) -> str:
+    """
+    统一的 LLM 调用接口，用于 Phase 3 新模式
+    替代旧的 Query_tuning, tool_select, operation 等函数
+
+    Args:
+        request_id: 请求 ID
+        messages: 完整的 messages 列表（由 SessionContext.build_messages() 生成）
+        model_name: 模型名称
+        stream: 是否流式输出
+        reasoning_effort: 推理effort级别
+
+    Returns:
+        LLM 的完整响应文本
+    """
+    from SpatialAnalysisAgent_ModelProvider import create_unified_client
+
+    client, provider = create_unified_client(model_name)
+
+    kwargs = {}
+    if reasoning_effort and provider in ["deepseek", "openai"]:
+        if model_name in ["deepseek-reasoner", "o1", "o1-mini", "o3-mini"]:
+            kwargs["reasoning_effort"] = reasoning_effort
+
+    try:
+        if stream:
+            response_stream = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                stream=True,
+                **kwargs
+            )
+
+            full_response = ""
+            for chunk in response_stream:
+                if chunk.choices and chunk.choices[0].delta.content:
+                    content = chunk.choices[0].delta.content
+                    print(content, end="", flush=True)
+                    full_response += content
+
+            return full_response
+        else:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                **kwargs
+            )
+            return response.choices[0].message.content
+
+    except Exception as e:
+        print(f"\n[Error] unified_llm_call failed: {e}")
+        raise
+

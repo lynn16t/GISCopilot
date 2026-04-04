@@ -60,7 +60,10 @@ from qgis.gui import QgsMapCanvas, QgsLayerTreeView, QgsLayerTreeMapCanvasBridge
 from qgis.core import QgsProject, QgsLayerTreeModel, QgsLayerTreeNode, QgsRectangle
 from qgis.core import QgsCoordinateReferenceSystem, QgsCoordinateTransform, QgsProject, QgsVectorLayer, \
     QgsCoordinateTransformContext, QgsGeometry, QgsFeature, QgsVectorFileWriter
-
+from SpatialAnalysisAgent_KnowledgeUI import (
+    setup_knowledge_tab,
+    init_knowledge_for_workspace,
+)
 
 
 FORM_CLASS, _ = uic.loadUiType(os.path.join(
@@ -401,12 +404,19 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.web_view_layout.addWidget(self.web_view)
         # self.graphview()
 
-        # Add a map view to display reports
-        self.report_web_view_layout = QVBoxLayout()
-        self.report_web_view_layout.setContentsMargins(0, 0, 0, 0)
-        self.report_widget.setLayout(self.report_web_view_layout)
-        self.report_web_view = QWebView()
-        self.report_web_view_layout.addWidget(self.report_web_view)
+        setup_knowledge_tab(self)
+        
+        # Initialise knowledge for the current workspace
+        workspace_dir = self.workspace_directoryLineEdit2.text()
+        qgis_project_path = None
+        try:
+            proj_path = QgsProject.instance().fileName()
+            if proj_path:
+                qgis_project_path = proj_path
+        except Exception:
+            pass
+        
+        init_knowledge_for_workspace(self, workspace_dir, qgis_project_path)
         # self.graphview()
 
         # Apply the syntax highlighter
@@ -441,10 +451,11 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # 当文本改变时启动定时器
         self.OpenAI_key_LineEdit.textChanged.connect(lambda: self.api_key_timer.start())
 
-        self.session = SessionContext()
-        
+        # Phase 3: 创建 SessionContext 并传入 knowledge_manager
+        self.session = SessionContext(knowledge_manager=self.knowledge_manager)
+
         #状态机控制按钮
-        self.agent = AgentController(session=self.session)
+        self.agent = AgentController(session=self.session, knowledge_manager=self.knowledge_manager)
         self._setup_action_buttons()
         # 所有 AgentController 信号都从子线程发出，必须用 QueuedConnection
         # 确保 slot 在主线程执行，否则 Qt GUI 操作会导致 access violation 崩溃
@@ -1831,6 +1842,20 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             # self.workspace_directoryLineEdit.setPlainText(directory)
             self.workspace_directoryLineEdit2.setText(directory)
 
+    def _on_workspace_changed(self):
+        """Call this after self.workspace_directoryLineEdit2 is updated."""
+        workspace_dir = self.workspace_directoryLineEdit2.text()
+        qgis_project_path = None
+        try:
+            proj_path = QgsProject.instance().fileName()
+            if proj_path:
+                qgis_project_path = proj_path
+        except Exception:
+            pass
+    
+        init_knowledge_for_workspace(self, workspace_dir, qgis_project_path)
+    
+    
     def run_script(self):
         # Clear the output_text_edit before starting
         self.output_text_edit.clear()
