@@ -175,7 +175,10 @@ class SessionContext:
         """
         组装 system message，分为静态部分和动态部分
 
+        Phase 5: 支持 conversation 步骤，使用 CONVERSATION_SYSTEM_PROMPT
+
         === 静态部分（跨调用不变，可被 prompt cache 命中）===
+        - 对话循环 prompt（仅 conversation 步骤）或步骤角色
         - 通用 GIS/QGIS 编码规则
         - 项目知识库相关条目
 
@@ -191,8 +194,16 @@ class SessionContext:
         # === 静态部分 ===
         static_parts = []
 
-        # 步骤角色（如果提供）
-        if step_role:
+        # Phase 5: conversation 步骤使用统一 prompt
+        if step == "conversation":
+            try:
+                from SpatialAnalysisAgent_Constants import CONVERSATION_SYSTEM_PROMPT
+                static_parts.append(CONVERSATION_SYSTEM_PROMPT)
+            except ImportError:
+                # 回退：如果没有新 prompt，使用简单版本
+                static_parts.append("You are a spatial analysis assistant.")
+        elif step_role:
+            # 其他步骤（code_generation, debug 等）仍可用步骤专属指令
             static_parts.append(step_role)
 
         # 通用 GIS/QGIS 规则
@@ -213,14 +224,16 @@ class SessionContext:
 
         # 数据概览（始终包含）
         if self.data_overview_str:
-            dynamic_parts.append(f"=== Data Overview ===\n{self.data_overview_str}")
+            dynamic_parts.append(f"=== Loaded Data ===\n{self.data_overview_str}")
 
-        # 当前 plan（仅在 code_generation / debug / plan_revision 步骤注入）
-        if step in ["code_generation", "debug", "plan_revision", "chat"] and self.current_plan:
+        # Phase 5: conversation 步骤注入完整上下文（plan + results）
+        # 因为 LLM 需要知道当前状态才能判断是否该生成 PLAN
+        if step in ["conversation", "code_generation", "debug",
+                    "plan_revision", "chat"] and self.current_plan:
             dynamic_parts.append(f"=== Current Plan ===\n{self.current_plan}")
 
-        # 最近执行结果（仅在 debug / chat / plan_revision 步骤注入，完整保留）
-        if step in ["debug", "chat", "plan_revision"] and self.results:
+        if step in ["conversation", "debug", "chat",
+                    "plan_revision"] and self.results:
             # 保留最近 3 条结果
             recent_results = self.results[-3:]
             results_text = "\n\n".join(recent_results)

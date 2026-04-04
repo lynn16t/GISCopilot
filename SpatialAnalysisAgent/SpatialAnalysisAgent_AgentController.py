@@ -307,22 +307,30 @@ class AgentController(QObject):
             print(f"[AgentController] Ignored action {action.name} in state {self._state.name}")
 
     def handle_text_input(self, message: str):
+        """
+        Phase 5: 统一对话循环入口。
+
+        所有非阻塞状态（IDLE / PLAN_READY / RESULT_READY / CONVERSING）
+        都走同一个对话循环入口。
+        """
         message = message.strip()
         if not message:
             return
 
-        if self._state == AgentState.IDLE:
-            self.handle_user_action(UserAction.SEND_TASK, message)
-        elif self._state == AgentState.PLAN_READY:
-            self.handle_user_action(UserAction.MODIFY_PLAN, message)
-        elif self._state == AgentState.RESULT_READY:
-            self.handle_user_action(UserAction.NEW_ANALYSIS, message)
-        elif self._state == AgentState.CONVERSING:
-            self.handle_user_action(UserAction.SEND_MESSAGE, message)
-        elif self._state in (AgentState.ANALYZING, AgentState.EXECUTING):
+        # 阻塞状态：正在处理中
+        if self._state in (AgentState.ANALYZING, AgentState.EXECUTING):
             self.chat_response.emit("正在处理中，请稍候...")
-        else:
-            self.chat_response.emit("系统状态异常，请点击取消后重试。")
+            return
+
+        # Phase 5: 所有其他状态统一走对话循环
+        print(f"[AgentController] handle_text_input in state {self._state.name}")
+
+        # 首次输入或数据概览不存在时，先生成 request_id
+        if not self._request_id:
+            self._generate_request_id()
+
+        # 统一走对话循环
+        self._start_worker(self._run_conversation_loop, message)
 
     # ========================
     # 启动工作线程
@@ -354,44 +362,22 @@ class AgentController(QObject):
     # ========================
 
     def _handle_new_task(self, task: str):
-        """处理 IDLE 状态的用户输入：先分类意图，再决定走分析还是闲聊"""
+        """
+        处理 IDLE 状态的用户输入。
+
+        Phase 5: 简化，不再分类意图，直接走对话循环。
+        """
         self.task = task
 
         # Phase 3: 重置 SessionContext 并设置任务
         self.session.reset()
         self.session.set_task(task)
 
-        self.status_update.emit("正在理解您的意图...")
+        self.status_update.emit("正在理解您的消息...")
         self._generate_request_id()
-        # 在工作线程中先分类，再路由
-        self._start_worker(self._run_idle_input, task)
 
-    def _run_idle_input(self, message: str):
-        """
-        IDLE 输入处理（在工作线程中运行）：
-        1. 意图分类
-        2. GIS 任务 → 检查数据 → _run_analysis()
-        3. 闲聊 → _run_chat_reply()
-        """
-        intent = self._classify_intent(message, mode="idle")
-
-        if intent == "chat":
-            self.status_update.emit("正在回复...")
-            self._run_chat_reply(message)
-        else:
-            # gis_task → 检查是否有数据路径
-            if not self.data_path or not self.data_path.strip():
-                self.chat_response.emit(
-                    "Please load the data to be used before "
-                    "running a GIS analysis task.\n"
-                    "You can load data using the 'Load Data' button.")
-                self.state = AgentState.IDLE
-                return
-
-            # 进入分析阶段
-            self.state = AgentState.ANALYZING
-            self.status_update.emit("正在分析任务...")
-            self._run_analysis()
+        # Phase 5: 直接走对话循环
+        self._start_worker(self._run_conversation_loop, task)
 
     def _handle_confirm_plan(self):
         """用户确认方案：PLAN_READY → EXECUTING → RESULT_READY"""
@@ -400,11 +386,15 @@ class AgentController(QObject):
         self._start_worker(self._run_execution)
 
     def _handle_modify_plan(self, modification: str):
-        """用户要求修改方案：PLAN_READY → CONVERSING → PLAN_READY"""
-        self.session.add_message("user", f"修改意见: {modification}")
-        self.state = AgentState.CONVERSING
+        """
+        用户要求修改方案：PLAN_READY → 对话循环。
+
+        Phase 5: 走对话循环。用户的修改意见作为普通消息，
+        LLM 看到当前 plan 上下文后，输出修改后的 PLAN JSON。
+        """
         self.status_update.emit("正在根据修改意见调整方案...")
-        self._start_worker(self._run_plan_revision, modification)
+        # Phase 5: 走对话循环
+        self._start_worker(self._run_conversation_loop, modification)
 
     def _handle_tweak_plan(self, modification: str):
         """微调方案：RESULT_READY → CONVERSING → PLAN_READY"""
@@ -414,20 +404,28 @@ class AgentController(QObject):
         self._start_worker(self._run_plan_revision, modification)
 
     def _handle_new_analysis(self, message: str):
-        """重新分析：RESULT_READY → ANALYZING → PLAN_READY"""
-        self.session.add_message("user", message)
+        """
+        重新分析：RESULT_READY → 对话循环。
+
+        Phase 5: 走对话循环。用户的新需求作为消息，
+        LLM 根据上下文（包含已有结果）判断是输出新 PLAN 还是追问。
+        """
         self.task = message
-        self.state = AgentState.ANALYZING
-        self.status_update.emit("正在分析新任务...")
+        self.status_update.emit("正在分析...")
         self._generate_request_id()
-        self._start_worker(self._run_analysis)
+        # Phase 5: 走对话循环
+        self._start_worker(self._run_conversation_loop, message)
 
     def _handle_report_error(self, error_description: str):
-        """用户报告结果有误：RESULT_READY → CONVERSING → PLAN_READY"""
-        self.session.add_message("user", f"结果有误: {error_description}")
-        self.state = AgentState.CONVERSING
-        self.status_update.emit("正在分析问题并重新规划...")
-        self._start_worker(self._run_plan_revision, error_description)
+        """
+        用户报告结果有误：RESULT_READY → 对话循环。
+
+        Phase 5: 走对话循环。用户描述错误，LLM 看到结果上下文后，
+        可能输出修改后的 PLAN，或者追问具体哪里有问题。
+        """
+        self.status_update.emit("正在分析问题...")
+        # Phase 5: 走对话循环
+        self._start_worker(self._run_conversation_loop, error_description)
 
     def _handle_conversation_message(self, message: str):
         """处理 CONVERSING 状态下的对话消息"""
@@ -486,137 +484,9 @@ class AgentController(QObject):
         return kwargs
 
     # ========================
-    # 意图分类
+    # Phase 5: 旧的意图分类代码已删除
+    # 现在统一使用对话循环 + OutputParser
     # ========================
-
-    # 分类提示词（IDLE 状态：判断 GIS 任务 vs 闲聊）
-    _IDLE_INTENT_PROMPT = """You are a classifier for a GIS analysis assistant.
-The user has sent a message. Determine if it is:
-- "gis_task": A request to perform spatial analysis, GIS operations, data processing,
-  map creation, or any task that requires loading/manipulating geographic data.
-- "chat": General conversation, greetings, questions about the tool itself,
-  or anything that does NOT require GIS analysis.
-
-Respond with ONLY one word: gis_task or chat
-No explanation, no punctuation, just the single word."""
-
-    # 分类提示词（CONVERSING 状态：判断方案修改 vs 新任务 vs 闲聊）
-    _CONV_INTENT_PROMPT = """You are a classifier for a GIS analysis assistant.
-The user is in a conversation after receiving an analysis plan or execution result.
-Determine the intent of their message:
-- "plan_modify": The user wants to adjust the current plan (change parameters,
-  switch tools, modify buffer distance, change CRS, etc.)
-- "new_task": The user is asking for a completely different/new GIS analysis task
-  unrelated to the current plan.
-- "chat": General question, clarification about results, or conversation that
-  does NOT require re-planning or new analysis.
-
-Current plan context:
-{plan_context}
-
-Respond with ONLY one word: plan_modify, new_task, or chat
-No explanation, no punctuation, just the single word."""
-
-    def _classify_intent(self, message: str, mode: str = "idle") -> str:
-        """
-        意图分类：通过一次快速非流式 LLM 调用判断用户输入的意图。
-
-        Args:
-            message: 用户输入的文本
-            mode: "idle"（IDLE 状态）或 "conversing"（CONVERSING 状态）
-
-        Returns:
-            "gis_task" / "chat"（idle 模式）
-            "plan_modify" / "new_task" / "chat"（conversing 模式）
-        """
-        import SpatialAnalysisAgent_helper as helper
-
-        if mode == "idle":
-            system_prompt = self._IDLE_INTENT_PROMPT
-            valid_intents = {"gis_task", "chat"}
-            default_intent = "gis_task"
-        else:
-            # conversing 模式：注入当前方案上下文
-            plan_context = ""
-            if self._analysis_result:
-                tb = self._analysis_result.get("task_breakdown", "")
-                tools = self._analysis_result.get("selected_tools", [])
-                plan_context = (f"Task: {self.task}\n"
-                                f"Breakdown: {tb[:300]}\n"
-                                f"Tools: {tools}")
-            system_prompt = self._CONV_INTENT_PROMPT.format(
-                plan_context=plan_context)
-            valid_intents = {"plan_modify", "new_task", "chat"}
-            default_intent = "plan_modify"
-
-        try:
-            kwargs = self._get_reasoning_kwargs()
-            response = helper.unified_llm_call(
-                request_id=self._request_id or str(uuid.uuid4()),
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message},
-                ],
-                model_name=helper.get_model_for_operation(self.model_name),
-                stream=False,
-                **kwargs)
-
-            # 解析：取第一个词，转小写，去除标点
-            intent = response.strip().lower().strip('"\'.,!').split()[0]
-            if intent in valid_intents:
-                print(f"[IntentClassifier] '{message[:50]}...' → {intent}")
-                return intent
-            else:
-                print(f"[IntentClassifier] Unexpected response: "
-                      f"'{response}', defaulting to {default_intent}")
-                return default_intent
-
-        except Exception as e:
-            print(f"[IntentClassifier] Error: {e}, "
-                  f"defaulting to {default_intent}")
-            return default_intent
-
-    def _run_chat_reply(self, message: str):
-        """
-        纯对话回复：不涉及 GIS 分析，直接用 LLM 回复。
-        状态不变（保持 IDLE 或回到 IDLE）。
-        """
-        import SpatialAnalysisAgent_helper as helper
-
-        kwargs = self._get_reasoning_kwargs()
-
-        # 构建上下文
-        messages = [
-            {"role": "system",
-             "content": "You are a helpful GIS assistant. "
-                        "Answer the user's question conversationally. "
-                        "If they seem to want to do GIS analysis, "
-                        "suggest they describe their task clearly "
-                        "and load the relevant data."},
-        ]
-
-        # 注入最近的会话历史（让闲聊有上下文）
-        recent_msgs = self.session._get_recent_messages()
-        for msg in recent_msgs[-4:]:  # 最近 2 轮对话
-            messages.append({
-                "role": msg["role"] if msg["role"] in ("user", "assistant")
-                        else "user",
-                "content": msg["content"]
-            })
-        messages.append({"role": "user", "content": message})
-
-        response = helper.unified_llm_call(
-            request_id=self._request_id or str(uuid.uuid4()),
-            messages=messages,
-            model_name=self.model_name,
-            stream=True,
-            **kwargs)
-
-        self.session.add_message("assistant", response)
-        self.chat_response.emit(response)
-
-        # 保持/回到 IDLE
-        self.state = AgentState.IDLE
 
     # ============================================================
     # 阶段函数 —— 真实 helper 调用（在 AgentWorkerThread 中运行）
@@ -799,51 +669,9 @@ No explanation, no punctuation, just the single word."""
         # ====== 步骤 5: 文档检索 ======
         self.status_update.emit("正在检索工具文档...")
 
-        selected_tool_IDs_list = []
-        SelectedTools = {}
-        all_documentation = []
-
-        for selected_tool in selected_tools:
-            if selected_tool in codebase.algorithm_names:
-                stid = codebase.algorithms_dict[selected_tool]['ID']
-            elif selected_tool in constants.tool_names_lists:
-                stid = constants.CustomTools_dict[selected_tool]['ID']
-            else:
-                stid = selected_tool
-
-            SelectedTools[selected_tool] = stid
-            selected_tool_IDs_list.append(stid)
-            stfid = re.sub(r'[ :?\/]', '_', stid)
-            print(f"TOOL_ID: {stid}")
-
-            found_path = None
-            for root, dirs, files in os.walk(Tools_Documentation_dir):
-                for file in files:
-                    if file == f"{stfid}.toml":
-                        found_path = os.path.join(root, file)
-                        break
-                if found_path:
-                    break
-
-            if not found_path:
-                print(f"Tool documentation for {stfid}.toml "
-                      f"is not provided")
-                continue
-
-            if ToolsDocumentation.check_toml_file_for_errors(found_path):
-                doc_str = ToolsDocumentation.tool_documentation_collection(
-                    tool_ID=stfid)
-            else:
-                print(f"File {stfid} has errors. Fixing...")
-                ToolsDocumentation.fix_toml_file(found_path)
-                doc_str = ToolsDocumentation.tool_documentation_collection(
-                    tool_ID=stfid)
-
-            all_documentation.append(doc_str)
-
-        print(f"List of selected tool IDs: {selected_tool_IDs_list}")
-        combined_documentation_str = '\n'.join(all_documentation)
-        print(combined_documentation_str)
+        # Phase 5: 使用提取的方法
+        selected_tool_IDs_list, combined_documentation_str = \
+            self._retrieve_tool_docs(selected_tools)
 
         # 存入 SessionContext（工具选择完成时）
         self.session.set_plan({
@@ -1191,66 +1019,197 @@ No explanation, no punctuation, just the single word."""
         self.state = AgentState.PLAN_READY
         self.plan_ready.emit(revised_plan)
 
-    def _run_conversation(self, message: str):
-        """
-        对话处理（在工作线程中运行）：
-        1. 意图分类（plan_modify / new_task / chat）
-        2. plan_modify → 修改方案，回到 PLAN_READY
-        3. new_task → 重新分析，走 ANALYZING 流程
-        4. chat → 回复后，根据上下文决定去向
-        """
-        intent = self._classify_intent(message, mode="conversing")
-        print(f"[Conversation] Intent: {intent}")
+    # ========================
+    # Phase 5: _run_conversation 方法已被 _run_conversation_loop 替代
+    # ========================
+    # Phase 5: 辅助方法 — 文档检索
+    # ========================
 
-        if intent == "plan_modify":
-            # 方案修改 → 走 _run_plan_revision
-            self.status_update.emit("正在根据您的意见修改方案...")
-            self._run_plan_revision(message)
+    def _retrieve_tool_docs(self, selected_tools: List[str]) -> tuple:
+        """
+        检索工具文档（从 _run_analysis 提取）。
 
-        elif intent == "new_task":
-            # 新任务 → 更新 task，走完整分析
-            self.task = message
-            self.status_update.emit("正在分析新任务...")
-            self._generate_request_id()
-            self.state = AgentState.ANALYZING
-            self._run_analysis()
+        Args:
+            selected_tools: 工具 ID 列表
+
+        Returns:
+            (selected_tool_IDs_list, combined_documentation_str)
+        """
+        import SpatialAnalysisAgent_Constants as constants
+        import SpatialAnalysisAgent_Codebase as codebase
+        import SpatialAnalysisAgent_ToolsDocumentation as ToolsDocumentation
+
+        current_script_dir = os.path.dirname(os.path.abspath(__file__))
+        Tools_Documentation_dir = os.path.join(
+            current_script_dir, 'Tools_Documentation')
+
+        selected_tool_IDs_list = []
+        SelectedTools = {}
+        all_documentation = []
+
+        for selected_tool in selected_tools:
+            if selected_tool in codebase.algorithm_names:
+                stid = codebase.algorithms_dict[selected_tool]['ID']
+            elif selected_tool in constants.tool_names_lists:
+                stid = constants.CustomTools_dict[selected_tool]['ID']
+            else:
+                stid = selected_tool
+
+            SelectedTools[selected_tool] = stid
+            selected_tool_IDs_list.append(stid)
+            stfid = re.sub(r'[ :?\/]', '_', stid)
+            print(f"TOOL_ID: {stid}")
+
+            found_path = None
+            for root, dirs, files in os.walk(Tools_Documentation_dir):
+                for file in files:
+                    if file == f"{stfid}.toml":
+                        found_path = os.path.join(root, file)
+                        break
+                if found_path:
+                    break
+
+            if not found_path:
+                print(f"Tool documentation for {stfid}.toml is not provided")
+                continue
+
+            if ToolsDocumentation.check_toml_file_for_errors(found_path):
+                doc_str = ToolsDocumentation.tool_documentation_collection(
+                    tool_ID=stfid)
+            else:
+                print(f"File {stfid} has errors. Fixing...")
+                ToolsDocumentation.fix_toml_file(found_path)
+                doc_str = ToolsDocumentation.tool_documentation_collection(
+                    tool_ID=stfid)
+
+            all_documentation.append(doc_str)
+
+        print(f"List of selected tool IDs: {selected_tool_IDs_list}")
+        combined_documentation_str = '\n'.join(all_documentation)
+        print(combined_documentation_str)
+
+        return selected_tool_IDs_list, combined_documentation_str
+
+    def _handle_plan_from_conversation(self, action: GuardGate.Action):
+        """
+        对话循环中检测到 PLAN → 激活状态机的 PLAN_READY。
+
+        这里做的事：
+        1. 解析 plan JSON，提取 tool_id 列表
+        2. 检索 TOML 文档
+        3. 保存到 SessionContext
+        4. 发射 plan_ready 信号，进入 PLAN_READY 等待用户确认
+
+        Args:
+            action: GuardGate 返回的 Action 对象
+        """
+        import SpatialAnalysisAgent_helper as helper
+
+        structured_plan = action.data["plan"]
+        plan_display_text = action.data["plan_text"]
+
+        # 提取工具列表
+        selected_tools = helper.extract_tool_ids_from_plan(structured_plan)
+        print(f"[ConversationLoop] Extracted tools from plan: {selected_tools}")
+
+        # 检索文档
+        if selected_tools:
+            selected_tool_IDs_list, combined_documentation_str = \
+                self._retrieve_tool_docs(selected_tools)
+        else:
+            selected_tool_IDs_list = []
+            combined_documentation_str = ""
+
+        # 保存到 session
+        import json
+        plan_text = json.dumps(structured_plan, indent=2, ensure_ascii=False)
+        self.session.set_plan(plan_text)
+
+        # 保存 _analysis_result 供执行阶段使用
+        self._analysis_result = {
+            "structured_plan": structured_plan,
+            "selected_tools": selected_tools,
+            "selected_tool_IDs": selected_tool_IDs_list,
+            "combined_documentation_str": combined_documentation_str,
+            "task_breakdown": structured_plan.get("task_summary", plan_display_text),
+            "data_overview": self.session.data_overview,
+        }
+
+        # 进入 PLAN_READY
+        self.state = AgentState.PLAN_READY
+        self.plan_ready.emit(self._analysis_result)
+        self.chat_response.emit(plan_display_text)
+
+        print("[ConversationLoop] Entered PLAN_READY state")
+
+    def _run_conversation_loop(self, message: str):
+        """
+        统一对话循环（在工作线程中运行）。
+
+        Phase 5 核心方法：替代 _run_idle_input / _run_chat_reply /
+        _run_conversation / _classify_intent。
+
+        所有用户输入统一走这个流程：
+        用户消息 → LLM → OutputParser → GuardGate → 路由
+
+        Args:
+            message: 用户输入的消息
+        """
+        import SpatialAnalysisAgent_helper as helper
+        import SpatialAnalysisAgent_Constants as constants
+
+        # 1. 记录用户消息
+        self.session.add_message("user", message)
+
+        # 2. 组装消息（统一用 build_messages）
+        #    step="conversation" 让 SessionContext 注入数据概览、当前 plan、最近结果
+        messages = self.session.build_messages(
+            step="conversation",
+            step_instruction=message,
+            step_role=""  # 不传角色，使用 CONVERSATION_SYSTEM_PROMPT
+        )
+
+        # 3. 调用 LLM
+        print("[ConversationLoop] Calling LLM...")
+        response = helper.unified_llm_call(
+            request_id=self._request_id or str(uuid.uuid4()),
+            messages=messages,
+            model_name=self.model_name,
+            stream=True,
+            **self._get_reasoning_kwargs()
+        )
+
+        # 4. OutputParser + GuardGate
+        action = self.process_llm_output(response)
+        print(f"[ConversationLoop] Detected output type: {action.action_type}")
+
+        # 5. 根据 action 路由
+        if action.action_type == "confirm_plan":
+            # PLAN 类型 → 触发状态机的 PLAN_READY
+            self.session.add_message("assistant", response)
+            self._handle_plan_from_conversation(action)
+
+        elif action.action_type == "show_code":
+            # CODE 类型 → 进 CodeEditor
+            self.session.add_message("assistant", response)
+            self.code_ready.emit(action.data["code"])
+            self.chat_response.emit(action.data["feedback_message"])
+            # 状态不变（保持当前状态）
+            print("[ConversationLoop] Code sent to CodeEditor")
+
+        elif action.action_type == "confirm_knowledge":
+            # 知识库更新建议
+            self.session.add_message("assistant", response)
+            self.handle_knowledge_update_action(action)
+            # 状态不变
+            print("[ConversationLoop] Knowledge update requested")
 
         else:
-            # 闲聊 → 回复后回到之前的上下文状态
-            import SpatialAnalysisAgent_helper as helper
-
-            session_context = self.session.get_context()
-            conversation_prompt = f"用户消息: {message}"
-            if session_context:
-                conversation_prompt = (
-                    f"会话上下文:\n{session_context}\n\n"
-                    f"{conversation_prompt}")
-
-            kwargs = self._get_reasoning_kwargs()
-
-            response = helper.unified_llm_call(
-                request_id=self._request_id,
-                messages=[
-                    {"role": "system",
-                     "content": "You are a GIS analysis assistant. "
-                                "Answer the user's question based on "
-                                "the conversation context. Be helpful "
-                                "and concise."},
-                    {"role": "user", "content": conversation_prompt},
-                ],
-                model_name=self.model_name,
-                stream=True,
-                **kwargs)
-
+            # QUESTION / CHAT → 直接显示在对话面板
             self.session.add_message("assistant", response)
-            self.chat_response.emit(response)
-
-            # 回到之前的上下文状态
-            if self.session.current_plan:
-                self.state = AgentState.PLAN_READY
-                self.plan_ready.emit(self.session.current_plan)
-            else:
-                self.state = AgentState.IDLE
+            self.chat_response.emit(action.data["message"])
+            # 状态不变（保持当前状态，等用户继续输入）
+            print(f"[ConversationLoop] {action.action_type.upper()} response sent to chat")
 
     # ========================
     # Phase 4: 输出处理（OutputParser + GuardGate）
