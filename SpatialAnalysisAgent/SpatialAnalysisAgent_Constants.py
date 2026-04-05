@@ -664,7 +664,7 @@ debug_requirement = [
 
 table_formats = ["CSV", 'Parquet', "TXT"]
 vector_formats = ["ESRI shapefile", "GeoPackage", "KML", "geojson"]
-raster_formats = ["Tiff", "JPEG", "PNG", "ERDAS IMG", "JP2", "HDF5" "HDF"]
+raster_formats = ["Tiff", "JPEG", "PNG", "ERDAS IMG", "JP2", "HDF5", "HDF"]
 
 support_formats = table_formats + vector_formats + raster_formats
 

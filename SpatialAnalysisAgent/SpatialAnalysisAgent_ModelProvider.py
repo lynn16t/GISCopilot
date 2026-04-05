@@ -557,7 +557,7 @@ def create_unified_client(model: str):
     return provider.create_client(provider_config), provider
 
 
-def generate_unified_completion(model: str, messages: List[Dict], **kwargs):
+def generate_unified_completion(request_id: str, model: str, messages: List[Dict], **kwargs):
     """Generate completion using the appropriate provider for the model"""
     client, provider = create_unified_client(model)
-    return provider.generate_completion(client, model, messages, **kwargs)
+    return provider.generate_completion(request_id, client, model, messages, **kwargs)

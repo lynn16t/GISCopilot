@@ -431,7 +431,7 @@ class AgentController(QObject):
         """处理 CONVERSING 状态下的对话消息"""
         self.session.add_message("user", message)
         self.status_update.emit("正在处理...")
-        self._start_worker(self._run_conversation, message)
+        self._start_worker(self._run_conversation_loop, message)
 
     def _handle_cancel(self):
         """取消当前任务，回到 IDLE"""
@@ -762,6 +762,7 @@ class AgentController(QObject):
         完成后自动暂停在 RESULT_READY，等待用户反馈。
         """
         import SpatialAnalysisAgent_helper as helper
+        import SpatialAnalysisAgent_Constants as constants
 
         if not self._is_running:
             return
@@ -983,7 +984,7 @@ class AgentController(QObject):
             f"（如缓冲区距离），保持工具不变，只修改相关描述。"
         )
 
-        session_context = self.session.get_context()
+        session_context = self.session.get_summary()
         if session_context:
             revision_prompt = (
                 f"会话上下文:\n{session_context}\n\n"
@@ -1313,7 +1314,7 @@ class AgentController(QObject):
             self._worker.terminate()
             self._worker.wait(3000)
         self.state = AgentState.IDLE
-        self.session.clear()
+        self.session.reset()
         self._analysis_result = {}
         self._is_running = True
 

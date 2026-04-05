@@ -256,6 +256,9 @@ class Solution():
         response_chucks = []
         accumulated_response = ""
         if stream:
+            if response is None:
+                print("Error: All LLM retry attempts failed, no response received.")
+                return response_chucks
 
             for chunk in response:
                 response_chucks.append(chunk)
@@ -828,7 +831,7 @@ class Solution():
         sampling_data_review_prompt = f"Your role: {constants.sampling_data_role} \n" + \
                                       f"Your task: {constants.sampling_task_prefix} \n\n" + \
                                       f"Requirement: \n{sampling_data_requirement_str} \n\n" + \
-                                      f"The function code is: \n----------\n{code} \n----------\n\n"  #+ \
+                                      f"The function code is: \n----------\n{operation_code} \n----------\n\n"  #+ \
         # f"The requirements for the code is: \n----------\n{sampling_data_requirement_str} \n----------\n\n"
 
         print("LLM is reviewing the direct request code... \n")

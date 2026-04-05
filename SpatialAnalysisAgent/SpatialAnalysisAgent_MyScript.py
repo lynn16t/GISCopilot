@@ -27,7 +27,7 @@ from SpatialAnalysisAgent_SessionContext import LayerSnapshot
 
 
 #%% DEFINING MAIN FUNCTION
-def main(task, data_path):
+def main(task, data_path, workspace_directory, model_name, is_review, reasoning_effort_value):
 
     data_path = data_path.split(';')  # Assuming data locations are joined by a semicolon
     task = task
@@ -41,7 +41,7 @@ if __name__ == "__main__":
     workspace_directory = sys.argv[4]
     is_review = sys.argv[5]
     reasoning_effort_value = sys.argv[6]
-    main(task, data_path,workspace_directory, model_name, is_review, reasoning_effort_value)
+    main(task, data_path, workspace_directory, model_name, is_review, reasoning_effort_value)
 
 #%% Printing the Task
 print("=" * 56)

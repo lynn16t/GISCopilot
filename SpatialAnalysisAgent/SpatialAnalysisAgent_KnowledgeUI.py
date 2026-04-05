@@ -13,16 +13,16 @@ Style: flat, modern, no borders, inspired by Claude's project panel.
 """
 
 import os
-from PyQt5.QtWidgets import (
+from qgis.PyQt.QtWidgets import (
     QVBoxLayout, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton, QListWidget, QListWidgetItem, QWidget,
     QFileDialog, QSplitter, QFrame, QAbstractItemView,
     QSizePolicy,
 )
-from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont, QColor
+from qgis.PyQt.QtCore import Qt, QTimer
+from qgis.PyQt.QtGui import QFont, QColor
 
-from SpatialAnalysisAgent_KnowledgeManager import ProjectKnowledgeManager
+from .SpatialAnalysisAgent_KnowledgeManager import ProjectKnowledgeManager
 
 
 # ---------------------------------------------------------------------------

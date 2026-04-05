@@ -12,7 +12,7 @@ import json
 
 
 
-DataEye_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data_eye_constants')
+DataEye_path = os.path.dirname(os.path.abspath(__file__))
 if DataEye_path not in sys.path:
     sys.path.append(DataEye_path)
 
@@ -133,15 +133,20 @@ def get_prompt_to_pick_up_data_locations(task, data_locations):
              f'Data location: \n{data_locations_str}'
     return prompt
 def see_table(file_path):
-    # print("OK")
-    # print(file_path)
-    # print(file_path[-3:])
     df = None
-    if file_path[-4:].lower() == '.csv':
-        # print(file_path)
+    ext = os.path.splitext(file_path)[1].lower()
+    if ext == '.csv':
         df = pd.read_csv(file_path)
         sample_df = pd.read_csv(file_path, dtype=str)
-    # get_df_types_str
+    elif ext == '.parquet':
+        df = pd.read_parquet(file_path)
+        sample_df = df.astype(str)
+    elif ext == '.txt':
+        df = pd.read_csv(file_path, sep='\t')
+        sample_df = pd.read_csv(file_path, sep='\t', dtype=str)
+    else:
+        return f"Unsupported table format: {ext}"
+
     types_str = '| '.join([f"{col}: {dtype}, {sample_df.iloc[0][col]} " for col, dtype in df.dtypes.items()])
     types_str = f"column names, data types, and sample values (column_name: data_type, sample value |):[{types_str}]"
     meta_str = types_str
@@ -178,7 +183,12 @@ def _get_raster_str(dataset, statistics=False, approx=False):  # receive rasteri
         band_stat_dict = {}
         for i in range(1, raster_dict["band_count"] + 1):
               # need time to do that
-            band_stat_dict[f"band_{i}"] = dataset.stats(indexes=i, approx=approx)
+            band_data = dataset.read(i)
+            band_stat_dict[f"band_{i}"] = {
+                "min": float(band_data.min()),
+                "max": float(band_data.max()),
+                "mean": float(band_data.mean()),
+            }
         raster_dict["statistics"] = band_stat_dict
 
     resolution = (dataset.transform[0], dataset.transform[4])
@@ -285,6 +295,9 @@ def get_LLM_reply(prompt,
             print(f"Error in get_LLM_reply(), will sleep {sleep_sec} seconds, then retry {count}/{retry_cnt}: \n", e)
             time.sleep(sleep_sec)
 
+    if not isSucceed:
+        print(f"Error: All {retry_cnt} LLM retry attempts failed in data_eye.get_LLM_reply()")
+        return None
     return response
 
 
