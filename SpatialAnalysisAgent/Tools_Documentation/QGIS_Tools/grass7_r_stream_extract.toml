@@ -1,0 +1,36 @@
+tool_ID = "grass:r.stream.extract"
+
+tool_name = "Stream Extraction (Stream to Feature)"
+
+brief_description = """Extracts stream network from a DEM using flow accumulation threshold. Converts raster streams to vector features. Equivalent to ArcGIS Stream to Feature."""
+
+parameters = """elevation=name[required]
+    Name of input elevation raster map
+threshold=float[required]
+    Minimum flow accumulation for streams
+stream_raster=name
+    Output stream raster map
+stream_vector=name
+    Output stream vector map
+direction=name
+    Output flow direction raster map"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer, QgsVectorLayer
+
+def stream_extract():
+    params = {
+        'elevation': 'D:/Data/dem.tif',
+        'threshold': 1000,
+        'stream_raster': 'D:/Output/streams_rast.tif',
+        'stream_vector': 'D:/Output/streams_vec.shp',
+        'direction': 'D:/Output/flow_dir.tif',
+        'GRASS_REGION_PARAMETER': None
+    }
+    
+    result = processing.run("grass:r.stream.extract", params)
+    
+    stream_layer = QgsVectorLayer(result['stream_vector'], 'Streams', 'ogr')
+    QgsProject.instance().addMapLayer(stream_layer)
+
+stream_extract()"""

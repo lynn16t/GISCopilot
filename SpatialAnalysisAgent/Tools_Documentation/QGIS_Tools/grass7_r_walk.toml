@@ -1,0 +1,33 @@
+tool_ID = "grass:r.walk.coords"
+
+tool_name = "Path Distance"
+
+brief_description = """Calculates anisotropic cumulative cost of moving over a cost surface considering slope and movement direction. Equivalent to ArcGIS Path Distance."""
+
+parameters = """elevation=name[required]
+    Name of input elevation raster
+friction=name[required]
+    Name of input friction cost raster
+output=name[required]
+    Name for output cumulative cost raster
+start_coordinates=east,north
+    Coordinates of starting point(s)"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def path_distance():
+    params = {
+        'elevation': 'D:/Data/dem.tif',
+        'friction': 'D:/Data/friction.tif',
+        'output': 'D:/Output/path_dist.tif',
+        'start_coordinates': '500000,4500000',
+        'GRASS_REGION_PARAMETER': None
+    }
+    
+    result = processing.run("grass:r.walk.coords", params)
+    
+    layer = QgsRasterLayer(result['output'], 'Path Distance')
+    QgsProject.instance().addMapLayer(layer)
+
+path_distance()"""

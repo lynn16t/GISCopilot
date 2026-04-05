@@ -1,0 +1,32 @@
+tool_ID = "grass:r.watershed"
+
+tool_name = "Flow Direction"
+
+brief_description = """Calculates flow direction for each cell of a DEM raster, determining the direction of steepest descent. Uses D8, MFD, or Dinf algorithms. Equivalent to ArcGIS Flow Direction."""
+
+parameters = """INPUT: Input DEM raster layer. Type: [raster]
+METHOD: Algorithm to use. 0: D8 (single flow direction), 1: MFD (multiple flow direction). Type: [enumeration] Default: 0
+OUTPUT: Output flow direction raster. Type: [raster]"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def flow_direction():
+    input_path = 'D:/Data/filled_dem.tif'
+    output_path = 'D:/Output/flow_dir.tif'
+    
+    # Using GRASS r.watershed for flow direction
+    params = {
+        'elevation': input_path,
+        'drainage': output_path,
+        'threshold': 500,
+        'GRASS_REGION_PARAMETER': None,
+        'GRASS_REGION_CELLSIZE_PARAMETER': 0
+    }
+    
+    result = processing.run("grass:r.watershed", params)
+    
+    fdir_layer = QgsRasterLayer(result['drainage'], 'Flow Direction')
+    QgsProject.instance().addMapLayer(fdir_layer)
+
+flow_direction()"""

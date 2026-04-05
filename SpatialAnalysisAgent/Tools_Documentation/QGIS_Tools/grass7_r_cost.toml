@@ -1,0 +1,36 @@
+tool_ID = "grass:r.cost"
+
+tool_name = "Cost Distance"
+
+brief_description = """Calculates the cumulative cost of moving from each cell to the nearest source cell based on a cost surface raster. Equivalent to ArcGIS Cost Distance / Distance Accumulation with cost surface."""
+
+parameters = """input=name[required]
+    Name of input cost surface raster
+output=name[required]
+    Name for output cumulative cost raster
+start_coordinates=east,north
+    Coordinates of starting point(s)
+start_raster=name
+    Name of starting raster with source cells
+nearest=name
+    Name for output allocation raster (nearest source)"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def cost_distance():
+    params = {
+        'input': 'D:/Data/cost_surface.tif',
+        'output': 'D:/Output/cost_dist.tif',
+        'start_coordinates': '500000,4500000',
+        'start_raster': '',
+        'nearest': 'D:/Output/allocation.tif',
+        'GRASS_REGION_PARAMETER': None
+    }
+    
+    result = processing.run("grass:r.cost", params)
+    
+    layer = QgsRasterLayer(result['output'], 'Cost Distance')
+    QgsProject.instance().addMapLayer(layer)
+
+cost_distance()"""

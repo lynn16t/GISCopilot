@@ -1,0 +1,30 @@
+tool_ID = "grass:r.flow"
+
+tool_name = "Flow Length"
+
+brief_description = """Calculates flow length (upstream or downstream distance along flow paths) for each cell in a DEM. Equivalent to ArcGIS Flow Length."""
+
+parameters = """elevation=name[required]
+    Name of input elevation raster map
+flowlength=name
+    Output flow path length raster (upstream)
+flowaccumulation=name
+    Output flow accumulation raster"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def flow_length():
+    params = {
+        'elevation': 'D:/Data/dem.tif',
+        'flowlength': 'D:/Output/flow_length.tif',
+        'flowaccumulation': '',
+        'GRASS_REGION_PARAMETER': None
+    }
+    
+    result = processing.run("grass:r.flow", params)
+    
+    layer = QgsRasterLayer(result['flowlength'], 'Flow Length')
+    QgsProject.instance().addMapLayer(layer)
+
+flow_length()"""

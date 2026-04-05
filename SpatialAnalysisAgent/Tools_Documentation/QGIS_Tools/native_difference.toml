@@ -1,0 +1,26 @@
+tool_ID = "native:difference"
+
+tool_name = "Erase (Difference)"
+
+brief_description = """Extracts features from the input layer that do not overlap with the overlay layer. Equivalent to ArcGIS Erase."""
+
+parameters = """INPUT: Input vector layer. Type: [vector: any]
+OVERLAY: Overlay (erase) layer. Type: [vector: any]
+OUTPUT: Output layer with non-overlapping features. Type: [vector: same as input]"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsVectorLayer
+
+def erase():
+    params = {
+        'INPUT': 'D:/Data/parcels.shp',
+        'OVERLAY': 'D:/Data/flood_zone.shp',
+        'OUTPUT': 'D:/Output/erased.shp'
+    }
+    
+    result = processing.run("native:difference", params)
+    
+    layer = QgsVectorLayer(result['OUTPUT'], 'Erased', 'ogr')
+    QgsProject.instance().addMapLayer(layer)
+
+erase()"""

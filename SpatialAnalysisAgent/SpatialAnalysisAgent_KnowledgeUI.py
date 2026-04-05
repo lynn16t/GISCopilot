@@ -22,7 +22,7 @@ from qgis.PyQt.QtWidgets import (
 from qgis.PyQt.QtCore import Qt, QTimer
 from qgis.PyQt.QtGui import QFont, QColor
 
-from .SpatialAnalysisAgent_KnowledgeManager import ProjectKnowledgeManager
+from SpatialAnalysisAgent_KnowledgeManager import ProjectKnowledgeManager
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,26 @@
+tool_ID = "native:symmetricaldifference"
+
+tool_name = "Symmetrical Difference"
+
+brief_description = """Creates a layer containing features from both input and overlay layers, excluding overlapping areas. Equivalent to ArcGIS Symmetrical Difference."""
+
+parameters = """INPUT: Input vector layer. Type: [vector: any]
+OVERLAY: Overlay vector layer. Type: [vector: any]
+OUTPUT: Output vector layer. Type: [vector: same as input]"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsVectorLayer
+
+def symmetrical_difference():
+    params = {
+        'INPUT': 'D:/Data/layer1.shp',
+        'OVERLAY': 'D:/Data/layer2.shp',
+        'OUTPUT': 'D:/Output/sym_diff.shp'
+    }
+    
+    result = processing.run("native:symmetricaldifference", params)
+    
+    layer = QgsVectorLayer(result['OUTPUT'], 'Symmetrical Difference', 'ogr')
+    QgsProject.instance().addMapLayer(layer)
+
+symmetrical_difference()"""

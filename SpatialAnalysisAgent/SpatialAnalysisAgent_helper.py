@@ -174,16 +174,20 @@ def create_OperationIdentification_promt(task):
     return prompt
 
 
-def create_ToolSelect_prompt(task, data_path):
+def create_ToolSelect_prompt(task, data_path, candidate_tools_str=None):
     ToolSelect_requirement_str = '\n'.join(
         [f"{idx + 1}. {line}" for idx, line in enumerate(constants.ToolSelect_requirements)])
     data_path_str = '\n'.join([f"{idx + 1}. {line}" for idx, line in enumerate(data_path)])
+
+    # 如果传入了 embedding 检索的候选工具，用它；否则回退到全量 tools_index
+    tools_str = candidate_tools_str if candidate_tools_str else str(constants.tools_index)
 
     prompt = f"Your role: {constants.ToolSelect_role} \n" + \
              f"Your mission: {constants.ToolSelect_prefix}: " + f"{task}\n\n" + \
              f"Based on the provided data {data_path_str}\n" + \
              f"Requirements: \n{ToolSelect_requirement_str} \n\n" + \
-             f"Customized tools:\n{constants.tools_index}\n" + \
+             f"Available tools:\n{tools_str}\n" + \
+             f"If none of the listed tools are suitable for a sub-task, respond with NEED_TOOL: <description of what you need> and I will search for additional tools.\n" + \
              f"Example for your reply: {constants.ToolSelect_reply_example2}\n"
 
     return prompt
@@ -664,6 +668,7 @@ def execute_complete_program(request_id, code: str, try_cnt: int, task: str, mod
     while count < try_cnt:
         print(f"\n\n-------------- Running code (trial # {count + 1}/{try_cnt}) --------------\n\n")
         original_stdout.flush()  # Ensure the message is printed immediately
+        exec_error = None
         try:
             count += 1
             # Redirect stdout to capture print output
@@ -673,213 +678,100 @@ def execute_complete_program(request_id, code: str, try_cnt: int, task: str, mod
 
             exec(compiled_code, globals())  # pass only globals()
 
-            # Restore original stdout after execution
-            sys.stdout = original_stdout
-
             # Display the successfully executed code
             print("\nSuccessfully executed code:")
             print("```python")
             print(code)
             print("```")
 
-            # send_error(user_api_key=load_OpenAI_key(), request_id=request_id, user_query=task, feedback="", feedback_message ="", error_msg ="", error_traceback="", generated_code=code)
-
             # Ensure that generated_output is returned or printed
             print(f"\n\n--------------- Done ---------------\n\n")
             return code, output_capture.getvalue(), error_collector
 
         except Exception as err:
-            sys.stdout = original_stdout  # Restore original stdout in case of error
-            # Capture full traceback for error reporting
-            error_traceback = traceback.format_exc()
-            error_collector.append({"attempt": count,
-                                    "code_snapshot": code[:800],  # truncate long code
-                                    "error_message": str(err),
-                                    "error_traceback": error_traceback
-                                    })
+            exec_error = err
+        finally:
+            # Always restore stdout, even if exec() or exception handler crashes
+            sys.stdout = original_stdout
+
+        # --- Error handling (after stdout is safely restored) ---
+        if exec_error is None:
+            continue
+
+        err = exec_error
+        # Capture full traceback for error reporting
+        error_traceback = traceback.format_exc()
+        error_collector.append({"attempt": count,
+                                "code_snapshot": code[:800],  # truncate long code
+                                "error_message": str(err),
+                                "error_traceback": error_traceback
+                                })
+
+        if count == try_cnt:
+            print(f"Failed to execute and debug the code within {try_cnt} times.")
+            return code, output_capture.getvalue(), error_collector
+
+        print("=" * 56)
+        print("AI IS DEBUGGING THE CODE...")
+        print("=" * 56)
+
+        # Phase 3: 使用 SessionContext（如果提供）
+        if session_context is not None:
+            # 新模式：通过 SessionContext 构建上下文
+            step_instruction = build_debug_instruction(
+                code=code,
+                error_msg=str(err),
+                documentation_str=documentation_str
+            )
+
+            messages = session_context.build_messages(
+                step="debug",
+                step_instruction=step_instruction,
+                step_role=constants.debug_role
+            )
+        else:
+            # 旧模式：直接构建 prompt（向后兼容）
+            debug_prompt = get_debug_prompt(
+                exception=err, code=code, task=task,
+                data_path=data_path, documentation_str=documentation_str
+            )
+            formatted_debug_prompt = f"{constants.debug_role}\n\n{debug_prompt}"
+            messages = [{"role": "user", "content": formatted_debug_prompt}]
+
+        print("DEBUGGING RESPONSE:", end="", flush=True)
+
+        try:
+            debug_response_str = unified_llm_call(
+                request_id=request_id,
+                messages=messages,
+                model_name=model_name,
+                stream=stream,
+                **kwargs
+            )
+        except Exception as api_error:
+            # If API call fails (e.g., invalid API key, network error), print error and continue to next iteration
+            print(f"\n\nAPI call failed during debugging: {api_error}")
+            print(f"Retrying with same code (attempt {count}/{try_cnt})...")
+            continue
+
+        # Extract code from the string response (same as code generation)
+        code = extract_code_from_str(debug_response_str)
+
+        # Emit the debugged code to the UI
+        print("=" * 56, flush=True)
+        print("\nDEBUGGED CODE:")
+        print("```python")
+        print(code)
+        print("```")
+
+        import urllib.parse
+        print("CODE_READY_URLENCODED:" + urllib.parse.quote(code), flush=True)
+
+        sys.stdout.flush()  # Force flush to ensure output reaches UI
+
+    return code, output_capture.getvalue(), error_collector
 
 
-            if count == try_cnt:
-                print(f"Failed to execute and debug the code within {try_cnt} times.")
-                return code, output_capture.getvalue(), error_collector
-
-            print("=" * 56)
-            print("AI IS DEBUGGING THE CODE...")
-            print("=" * 56)
-
-            # Phase 3: 使用 SessionContext（如果提供）
-            if session_context is not None:
-                # 新模式：通过 SessionContext 构建上下文
-                step_instruction = build_debug_instruction(
-                    code=code,
-                    error_msg=str(err),
-                    documentation_str=documentation_str
-                )
-
-                messages = session_context.build_messages(
-                    step="debug",
-                    step_instruction=step_instruction,
-                    step_role=constants.debug_role
-                )
-            else:
-                # 旧模式：直接构建 prompt（向后兼容）
-                debug_prompt = get_debug_prompt(
-                    exception=err, code=code, task=task,
-                    data_path=data_path, documentation_str=documentation_str
-                )
-                formatted_debug_prompt = f"{constants.debug_role}\n\n{debug_prompt}"
-                messages = [{"role": "user", "content": formatted_debug_prompt}]
-
-            print("DEBUGGING RESPONSE:", end="", flush=True)
-
-            try:
-                debug_response_str = unified_llm_call(
-                    request_id=request_id,
-                    messages=messages,
-                    model_name=model_name,
-                    stream=stream,
-                    **kwargs
-                )
-            except Exception as api_error:
-                # If API call fails (e.g., invalid API key, network error), print error and continue to next iteration
-                print(f"\n\nAPI call failed during debugging: {api_error}")
-                print(f"Retrying with same code (attempt {count}/{try_cnt})...")
-                continue
-
-            # print("\n", flush=True)
-
-            # Extract code from the string response (same as code generation)
-            code = extract_code_from_str(debug_response_str)
-
-            # Emit the debugged code to the UI
-            # print("DEBUGGING COMPLETED - SENDING CODE TO UI", flush=True)
-            print("=" * 56, flush=True)
-            print("\nDEBUGGED CODE:")
-            print("```python")
-            print(code)
-            print("```")
-
-            import urllib.parse
-            print("CODE_READY_URLENCODED:" + urllib.parse.quote(code), flush=True)
-
-            # Capture full traceback for error reporting
-            error_traceback = traceback.format_exc()
-
-            sys.stdout.flush()  # Force flush to ensure output reaches UI
-
-    return code, output_capture.getvalue(),error_collector,
-
-
-
-
-# def review_operation_code(extracted_code, data_path, workspace_directory, documentation_str):
-#     OpenAI_key = load_OpenAI_key()
-#     model = ChatOpenAI(api_key=OpenAI_key, model='gpt-4o', temperature=1)
-#
-#     operation_code_review_requirement_str = '\n'.join(
-#         [f"{idx + 1}. {line}" for idx, line in enumerate(constants.operation_code_review_requirement)])
-#     operation_code_review_prompt = f"Your role: {constants.operation_code_review_role} \n" + \
-#                                    f"Your mission: {constants.operation_code_review_task_prefix} \n\n" + \
-#                                    f"The extracted code is: \n----------\n{extracted_code}\n----------\n\n" + \
-#                                    f"The code examples in the Documentation: \n{documentation_str} can be used as an example while reviewing the extracted_code \n\n" + \
-#                                    f"The requirements for the code is: \n{operation_code_review_requirement_str}\n\n" + \
-#                                    f"Replace the data path in the code example with:{data_path}\n\n" + \
-#                                    f"Set {workspace_directory} as the output directory for any operation"
-#
-#     code_review_prompt_str_chunks = asyncio.run(fetch_chunks(model, operation_code_review_prompt))
-#     clear_output(wait=True)
-#     review_str_LLM_reply_str = convert_chunks_to_code_str(chunks=code_review_prompt_str_chunks)
-#     # EXTRACTING REVIEW_CODE
-#
-#     print("\n")
-#     print(f"\n -------------------------- FINAL REVIEWED CODE -------------------------- \n")
-#     print("```python")
-#     reviewed_code = extract_code_from_str(LLM_reply_str=review_str_LLM_reply_str, verbose=True)
-#     # print(reviewed_code)
-#     # print("```")
-#
-#     # Emit the debugged code to CodeEditor
-#     import urllib.parse
-#     print("CODE_READY_URLENCODED:" + urllib.parse.quote(reviewed_code))
-#
-#     return reviewed_code
-
-
-# def execute_complete_program(code: str, try_cnt: int, task: str, model_name: str, documentation_str: str) -> str:
-#     count = 0
-#
-#     while count < try_cnt:
-#         print(f"\n\n-------------- Running code (trial # {count + 1}/{try_cnt}) --------------\n\n")
-#         try:
-#             count += 1
-#
-#
-#             compiled_code = compile(code, 'Complete program', 'exec')
-#             exec(compiled_code, globals())  # #pass only globals() not locals()
-#             # !!!!    all variables in code will become global variables! May cause huge issues!     !!!!
-#
-#
-#             # Ensure that generated_output is returned or printed
-#             print(f"\n\n--------------- Done ---------------\n\n")
-#             return code
-#
-#         # except SyntaxError as err:
-#         #     error_class = err.__class__.__name__
-#         #     detail = err.args[0]
-#         #     line_number = err.lineno
-#         #
-#         except Exception as err:
-#
-#             # cl, exc, tb = sys.exc_info()
-#
-#             # print("An error occurred: ", traceback.extract_tb(tb))
-#             #
-#
-#             if count == try_cnt:
-#                 print(f"Failed to execute and debug the code within {try_cnt} times.")
-#                 return code
-#
-#             # print("code in execute_complete_program():", code)
-#             #
-#             debug_prompt = get_debug_prompt(exception=err, code=code, task=task, documentation_str=documentation_str)
-#             print("Sending error information to LLM for debugging...")
-#             # print("Prompt:\n", debug_prompt)
-#             response = get_LLM_reply(prompt=debug_prompt,
-#                                      system_role=constants.debug_role,
-#                                      model=model_name,
-#                                      verbose=True,
-#                                      stream=True,
-#                                      retry_cnt=5,
-#                                      )
-#             code = extract_code(response)
-#
-#     return code
-#
-#
-# def capture_print_output(code: str) -> str:
-#     # Create a StringIO object to capture printed output
-#     output_capture = io.StringIO()
-#     original_stdout = sys.stdout  # Save the original stdout
-#
-#     try:
-#         # Redirect stdout to capture print output
-#         sys.stdout = output_capture
-#
-#         # Compile and execute the code
-#         compiled_code = compile(code, 'Complete program', 'exec')
-#         exec(compiled_code, globals())  # Pass only globals()
-#
-#         # Restore original stdout after execution
-#         sys.stdout = original_stdout
-#
-#         # Return captured output
-#         return output_capture.getvalue()
-#
-#     except Exception as err:
-#         # Restore original stdout in case of error
-#         sys.stdout = original_stdout
-#         print(f"Error occurred during code execution: {err}")
-#         return ""
 
 
 def get_debug_prompt(exception, code, task, data_path, documentation_str):
@@ -1165,27 +1057,6 @@ def show_graph(G):
         nt.nodes[i]['shape'] = 'dot'
         # nt.set_node_style(node, shape="box")
         nt.nodes[i]['font'] = {'size': 20}  # set font size
-
-    return nt
-
-    # # Set consistent node colors and shapes based on node type
-    # for i, node in enumerate(nt.nodes):
-    #     # Check if 'node_type' key exists
-    #     if 'node_type' not in node:
-    #         print(f"Warning: node {node['label']} does not have 'node_type'. Skipping this node.")
-    #         continue
-    #
-    #     if node['node_type'] == 'data':
-    #         # All data nodes get the same color for consistency
-    #         nt.nodes[i]['color'] = '#4CAF50'  # Green for data nodes
-    #         nt.nodes[i]['shape'] = 'circle'   # Circle shape for data
-    #         nt.nodes[i]['size'] = 25
-    #
-    #     elif node['node_type'] == 'operation':
-    #         # All operation nodes get the same color for consistency
-    #         nt.nodes[i]['color'] = '#2196F3'  # Blue for operation nodes
-    #         nt.nodes[i]['shape'] = 'box'      # Box shape for operations
-    #         nt.nodes[i]['size'] = 25
 
     return nt
 
@@ -2642,13 +2513,16 @@ Output Sample:
     return instruction
 
 
-def build_tool_selection_instruction(task_breakdown: str) -> str:
+def build_tool_selection_instruction(task_breakdown: str, candidate_tools_str: str = None) -> str:
     """
     构建 Tool Selection 步骤指令
     输出格式升级为结构化执行计划（JSON）
     """
     ToolSelect_requirement_str = '\n'.join(
         [f"{idx + 1}. {line}" for idx, line in enumerate(constants.ToolSelect_requirements)])
+
+    # 如果传入了 embedding 检索的候选工具，用它；否则回退到全量 tools_index
+    tools_str = candidate_tools_str if candidate_tools_str else str(constants.tools_index)
 
     instruction = f"""{constants.ToolSelect_prefix}
 
@@ -2657,8 +2531,10 @@ Task breakdown: {task_breakdown}
 Requirements:
 {ToolSelect_requirement_str}
 
-Customized tools:
-{constants.tools_index}
+Available tools:
+{tools_str}
+
+If none of the listed tools are suitable for a sub-task, respond with NEED_TOOL: <description of what you need>.
 
 {constants.structured_tool_selection_output_format}
 

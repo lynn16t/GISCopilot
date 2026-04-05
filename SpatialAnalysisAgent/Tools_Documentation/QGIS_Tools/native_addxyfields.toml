@@ -1,0 +1,28 @@
+tool_ID = "native:addxyfields"
+
+tool_name = "Add XY Coordinates"
+
+brief_description = """Adds X and Y coordinate fields to a point vector layer. Equivalent to ArcGIS Add XY Coordinates."""
+
+parameters = """INPUT: Input point layer. Type: [vector: point]
+CRS: CRS for coordinate values. Type: [crs]
+PREFIX: Prefix for coordinate field names. Type: [string] Default: ''
+OUTPUT: Output layer with XY fields. Type: [vector: point]"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsVectorLayer
+
+def add_xy():
+    params = {
+        'INPUT': 'D:/Data/points.shp',
+        'CRS': 'EPSG:4326',
+        'PREFIX': '',
+        'OUTPUT': 'D:/Output/points_xy.shp'
+    }
+    
+    result = processing.run("native:addxyfields", params)
+    
+    layer = QgsVectorLayer(result['OUTPUT'], 'Points with XY', 'ogr')
+    QgsProject.instance().addMapLayer(layer)
+
+add_xy()"""

@@ -1,0 +1,36 @@
+tool_ID = "grass:r.fill.dir"
+
+tool_name = "Fill DEM (Fill Sinks)"
+
+brief_description = """Fills sinks in a DEM to create a depressionless elevation model, ensuring proper hydrological flow routing. Equivalent to ArcGIS Fill (Spatial Analyst)."""
+
+parameters = """elevation=name[required]
+    Name of input elevation raster map
+output=name[required]
+    Name for output filled elevation raster map
+direction=name
+    Name for output flow direction raster map
+areas=name
+    Name for output raster map of filled areas"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def fill_sinks():
+    input_path = 'D:/Data/DEM.tif'
+    
+    params = {
+        'elevation': input_path,
+        'output': 'D:/Output/filled_dem.tif',
+        'direction': 'D:/Output/flow_direction.tif',
+        'areas': '',
+        'GRASS_REGION_PARAMETER': None,
+        'GRASS_REGION_CELLSIZE_PARAMETER': 0
+    }
+    
+    result = processing.run("grass:r.fill.dir", params)
+    
+    filled_layer = QgsRasterLayer(result['output'], 'Filled DEM')
+    QgsProject.instance().addMapLayer(filled_layer)
+
+fill_sinks()"""

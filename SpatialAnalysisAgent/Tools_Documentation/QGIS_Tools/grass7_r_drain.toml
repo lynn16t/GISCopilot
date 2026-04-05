@@ -1,0 +1,33 @@
+tool_ID = "grass:r.drain"
+
+tool_name = "Snap Pour Point"
+
+brief_description = """Traces a flow path from given map coordinates using an input flow direction map. Can snap pour points to highest flow accumulation cell within a search distance. Equivalent to ArcGIS Snap Pour Point."""
+
+parameters = """input=name[required]
+    Name of input flow direction or elevation raster
+output=name[required]
+    Name for output drain path raster
+drain=name
+    Name for output drain path vector
+start_coordinates=east,north[required]
+    Coordinates of starting point (pour point)"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def snap_pour_point():
+    params = {
+        'input': 'D:/Data/flow_acc.tif',
+        'output': 'D:/Output/pour_point.tif',
+        'drain': '',
+        'start_coordinates': '500000,4500000',
+        'GRASS_REGION_PARAMETER': None
+    }
+    
+    result = processing.run("grass:r.drain", params)
+    
+    layer = QgsRasterLayer(result['output'], 'Pour Point')
+    QgsProject.instance().addMapLayer(layer)
+
+snap_pour_point()"""

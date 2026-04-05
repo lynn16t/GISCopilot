@@ -1,32 +1,24 @@
 tool_ID = "native:extractvertices"
-tool_name = "Extract vertices"
-brief_description = """Takes a vector layer and generates a point layer with points representing the vertices in the input geometries."""
-full_description = """Takes a vector layer and generates a point layer with points representing the vertices in the input geometries.
-The attributes associated to each point are the same ones associated to the feature that the vertex belongs to.
-Additional fields are added to the vertices indicating the vertex index (beginning at 0), the feature’s part and its index within the part (as well as its ring for polygons), distance along original geometry and bisector angle of vertex for original geometry.
-Allows features in-place modification of point features
-Default menu: Vector ► Geometry Tools"""
-parameters = """INPUT: Input layer. Input vector layer. Type: [vector: any]
-OUTPUT: Vertices. Specify the output vector layer. One of: Create Temporary Layer ( TEMPORARY_OUTPUT ) Save to File… Save to Geopackage… Save to Database Table… Append to Layer… The file encoding can also be changed here.. Type: [vector: point] Default: [Create temporary layer]"""
-outputs = "OUTPUT: Vertices. The output (point) vector layer containing the vertices fromthe input layer geometries.. Type: [vector: point]"
-code_example = """
-from qgis.core import QgsVectorLayer, QgsProject
-import processing
 
-def extract_vertices():
-    input_layer_path = 'D:/Data/InputLayer.shp'
-    output_layer_path = 'C:/output_path/vertices_layer.shp'
-    
-    input_layer = QgsVectorLayer(input_layer_path, 'Input Layer', 'ogr')
+tool_name = "Feature Vertices to Points"
 
-    parameters = {
-        'INPUT': input_layer_path,
-        'OUTPUT': output_layer_path
+brief_description = """Extracts vertices from line or polygon features and returns them as a point layer. Equivalent to ArcGIS Feature Vertices to Points."""
+
+parameters = """INPUT: Input vector layer. Type: [vector: line or polygon]
+OUTPUT: Output point layer with vertices. Type: [vector: point]"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsVectorLayer
+
+def vertices_to_points():
+    params = {
+        'INPUT': 'D:/Data/roads.shp',
+        'OUTPUT': 'D:/Output/vertices.shp'
     }
+    
+    result = processing.run("native:extractvertices", params)
+    
+    layer = QgsVectorLayer(result['OUTPUT'], 'Vertices', 'ogr')
+    QgsProject.instance().addMapLayer(layer)
 
-    result = processing.run('native:extractvertices', parameters)
-    
-    vertices_layer = QgsVectorLayer(result['OUTPUT'], 'Vertices Layer', 'ogr')
-    QgsProject.instance().addMapLayer(vertices_layer)
-    
-extract_vertices()"""
+vertices_to_points()"""

@@ -190,7 +190,14 @@ class AgentController(QObject):
 
         # Phase 3: 使用新的 SessionContext，传入 knowledge_manager
         from SpatialAnalysisAgent_SessionContext import SessionContext
-
+        from SpatialAnalysisAgent_ToolRetrieval import ToolRetriever
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.tool_retriever = ToolRetriever(
+            tools_doc_dir=os.path.join(current_dir, "Tools_Documentation"),
+            tools_json_path=os.path.join(current_dir, "qgis340_tools.json"),
+            model_dir=os.path.join(current_dir, "embedding_model"),
+        )
+        
         if session is not None and isinstance(session, SessionContext):
             self.session = session
         else:
@@ -222,6 +229,14 @@ class AgentController(QObject):
 
         # 当前运行的工作线程
         self._worker: Optional[AgentWorkerThread] = None
+        
+        from SpatialAnalysisAgent_ToolRetrieval import ToolRetriever
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        self.tool_retriever = ToolRetriever(
+            tools_doc_dir=os.path.join(current_dir, "Tools_Documentation"),
+            tools_json_path=os.path.join(current_dir, "qgis340_tools.json"),
+            model_dir=os.path.join(current_dir, "embedding_model"),
+        )
 
     # ========================
     # 状态管理
@@ -429,7 +444,7 @@ class AgentController(QObject):
 
     def _handle_conversation_message(self, message: str):
         """处理 CONVERSING 状态下的对话消息"""
-        self.session.add_message("user", message)
+        # 不再预先添加消息，由 _run_conversation_loop 统一添加
         self.status_update.emit("正在处理...")
         self._start_worker(self._run_conversation_loop, message)
 
@@ -597,14 +612,24 @@ class AgentController(QObject):
         if not self._is_running:
             return
 
+        # ====== 步骤 3.5: Embedding 检索候选工具 ======
+        from SpatialAnalysisAgent_ToolRetrieval import ToolRetriever, get_whitelist_tool_info
+        
+        retrieved_tools = self.tool_retriever.retrieve(task_breakdown, top_k=20)
+        whitelist_info = get_whitelist_tool_info(self.tool_retriever, constants.TOOL_WHITELIST)
+        candidate_tools_str = ToolRetriever.format_for_prompt(whitelist_info, retrieved_tools)
+        print(f"[ToolRetrieval] Whitelist: {len(whitelist_info)}, Retrieved: {len(retrieved_tools)}")
+
         # ====== 步骤 4: 工具选择（结构化执行计划）======
         self.status_update.emit("正在规划执行步骤...")
         print("=" * 56)
         print("AI IS PLANNING THE EXECUTION STEPS ...")
         print("=" * 56)
 
-        # Phase 3: 使用新模式，返回结构化 JSON 计划
-        step_instruction = helper.build_tool_selection_instruction(task_breakdown=task_breakdown)
+        step_instruction = helper.build_tool_selection_instruction(
+            task_breakdown=task_breakdown,
+            candidate_tools_str=candidate_tools_str,  # ← 加这个
+        )
         messages = self.session.build_messages(
             step="tool_selection",
             step_instruction=step_instruction,
@@ -674,11 +699,11 @@ class AgentController(QObject):
             self._retrieve_tool_docs(selected_tools)
 
         # 存入 SessionContext（工具选择完成时）
-        self.session.set_plan({
+        self.session.set_plan(json.dumps({
             "task_breakdown": task_breakdown,
             "selected_tools": selected_tools,
             "selected_tool_IDs": selected_tool_IDs_list,
-        })
+        }, indent=2, ensure_ascii=False))
         self.session.add_message(
             "assistant",
             f"Selected tools: {selected_tools}\n"
@@ -743,7 +768,7 @@ class AgentController(QObject):
             "html_graph_path": html_graph_path,
         }
 
-        self.session.set_plan(self._analysis_result)
+        self.session.set_plan(json.dumps(self._analysis_result, indent=2, ensure_ascii=False, default=str))
         self.session.add_message(
             "assistant",
             f"分析完成。\n任务分解: {task_breakdown}\n"
@@ -1011,7 +1036,8 @@ class AgentController(QObject):
             "revision_note": f"根据用户反馈修改: {user_feedback}",
         }
 
-        self.session.set_plan(revised_plan)
+        import json
+        self.session.set_plan(json.dumps(revised_plan, indent=2, ensure_ascii=False, default=str))
         self._analysis_result = revised_plan
         self.session.add_message(
             "assistant",

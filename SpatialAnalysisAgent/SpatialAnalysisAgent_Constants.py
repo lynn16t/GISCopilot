@@ -296,8 +296,7 @@ ToolSelect_requirements = [
 ]
 
 #*********************************************************************************************************************************************************************
-#--------------------------------- INTENT CLASSIFIER PROMPTS
-
+#--------------------------------- INTENT CLASSIFIER PROMPTS (used by dockwidget legacy path)
 
 IDLE_INTENT_CLASSIFY_PROMPT = """You are an intent router for a QGIS spatial analysis assistant.
 Your ONLY task is to classify the user input into one of the following categories:
@@ -337,82 +336,8 @@ User input: "{user_input}"
 
 Reply with CHAT, PLAN_MODIFY, or UNCLEAR only. No explanation."""
 
-
-
-
-# # ***********************************************************************************************************************************************************************
-# #----------------------------------- Step ----------------------------------------
-
-#--------------- CONSTANTS FOR GRAPH GENERATION -----------------------------------------------------------------------------------------------------------
-# graph_role = r'''A professional Geo-information scientist with high proficiency in using QGIS and programmer good at Python. You have worked on Geographic information science more than 20 years, and know every detail and pitfall when processing spatial data and coding. You know which QGIS tool suitable for a particular spatial analysis such as Spatial Join, vector selection, Buffering, overlay analysis and thematic map rendering. You have significant experence on graph theory, application, and implementation. You will be creating a solution graph based on the specific task.
-# '''
-
-# graph_task_prefix = r'Generate a graph (qgis graphical modeler) only, whose nodes are the operations/steps to solve this question: '
-
-# graph_reply_exmaple = r"""
-# ```python
-# import networkx as nx
-#
-# G = nx.DiGraph()
-#
-#
-# # Step 1: Access Loaded Data
-# G.add_node("network_data", node_type="data", description="Loaded network data")
-# G.add_edge("load_network_data", "network_data")
-#
-# # Step 2: Set Speed Limit as Edge Weight
-# G.add_node("set_speed_limit_weight", node_type="operation", description="Assign speed limits as edge weights for road segments in the network")
-# G.add_edge("network_data", "set_speed_limit_weight")
-#
-# G.add_node("weighted_edges", node_type="data", description="Road network with speed limits as edge weights")
-# G.add_edge("set_speed_limit_weight", "weighted_edges")
-#
-#
-#
-# ...
-# ```
-# """
-
-# graph_requirement = ["The graph should contain the basic steps to carry out the specified task",
-#
-#                      "The task will be addressed by using python codes, particularly PYQGIS in QGIS enviroment. Therefore DO NOT include steps that involve opening of QGIS Software or opening of any tool in the QGIS software",
-#                      "DO NOT include the steps that involve QGIS environment setup and library installation",
-#                      "The input can be data paths or variables, and the output are temporary layer",
-#                      "If the data is already loaded in the QGIS instance, you can directly access the layer by its name and proceed with the other steps.",
-#                      "Intending to use the QGIS processing tool to perform tasks",
-#                      "The output should not be saved but should be loaded as a temporary layer within the QGIS",
-#                      "Display Output in QGIS",
-#                      "Steps and data (both input and output) form a graph stored in NetworkX. Disconnected components are NOT allowed.",
-#                      "There are two types of nodes: a) operation node, and b) data node (both input and output data). These nodes are also input nodes for the next operation node.",
-#                     "There must not be disconnected components",
-#                      "The input of each operation is the output of the previous operations, except the those need to load data from a path or need to collect data.",
-#                      "DO NOT alter or change the name of any given data path or variable that are given.  E.g, '/Data/Shape1' shold not be changed to '/Data/Shape_1'"
-#                      "You need to carefully name the output data node, making they human readable but not to long.",
-#                      "The data and operation form a graph.",
-#
-#                      'The first operations are data loading or collection, and the output of the last operation is the final answer to the task.',
-#                      'Operation nodes need to connect via output data nodes, DO NOT connect the operation node directly.',
-#                      "The node attributes include: 1) node_type (data or operation), 2) data_path (data node only, set to '' if not given ), and description. E.g., {‘name’: 'County boundary', 'data_type': 'data', 'data_path': 'D:\Test\county.shp',  'description': 'County boundary for the study area'}.",
-#                      "The connection between a node and an operation node is an edge.",
-#                      "Add all nodes and edges, including node attributes to a NetworkX instance, DO NOT change the attribute names.",
-#                      "DO NOT generate code to implement the steps.",
-#                      # 'Join the attribute to the vector layer via a common attribute if necessary.',
-#                      "Put your reply into a Python code block, NO explanation or conversation outside the code block(enclosed by ```python and ```).",
-#                      "Note that GraphML writer does not support class dict or list as data values.",
-#                      # 'You need spatial data (e.g., vector or raster) to make a map.',
-#                      "Do not put the GraphML writing process as a step in the graph.",
-#                     "Do not put the graph creation as a step in the graph",
-#                      "Keep the graph concise, DO NOT use too many operation nodes.",
-#                      'Keep the graph concise, DO NOT over-split task into too many small steps'
-#                      ]
-#
-# # other requirements prone to errors, not used for now
-# """
-# 'DO NOT over-split task into too many small steps, especially for simple problems. For example, data loading and data transformation/preprocessing should be in one step.',
-# """
-
 #****************************************************************************************************************************************************************
-## NEW CONSTANTS FOR GRAPH GENERATION
+## CONSTANTS FOR GRAPH GENERATION
 graph_role = r'''A professional Geo-information scientist with high proficiency in using QGIS and programmer good at Python. You have worked on Geographic information science more than 20 years, and know every detail and pitfall when processing spatial data and coding. You know well how to set up workflows for spatial analysis tasks. You have significant experence on graph theory, application, and implementation. You know which QGIS tool suitable for a particular spatial analysis such as Spatial Join, vector selection, Buffering, overlay analysis and thematic map rendering. You have significant experence on graph theory, application, and implementation. You are also experienced on generating map using Matplotlib and GeoPandas.
 '''
 
@@ -759,3 +684,70 @@ structured_tool_selection_example_complex = """{
     }
   ]
 }"""
+
+TOOL_WHITELIST = [
+    # --- Projection / CRS ---
+    "native:reprojectlayer",
+    "native:assignprojection",
+    
+    # --- Field Operations ---
+    "native:fieldcalculator",
+    "native:addfieldtoattributestable",
+    "native:deletecolumn",
+    "native:renametablefield",
+    "native:retainfields",
+    "native:refactorfields",
+    "native:addautoincrementalfield",
+    "native:addxyfields",
+    
+    # --- Selection / Extraction ---
+    "native:extractbyattribute",
+    "native:extractbyexpression",
+    "native:extractbylocation",
+    "native:extractbyextent",
+    "native:extractwithindistance",
+    "native:saveselectedfeatures",
+    "native:selectbylocation",
+    "native:selectwithindistance",
+    "qgis:selectbyattribute",
+    "qgis:selectbyexpression",
+    
+    # --- Join ---
+    "native:joinattributesbylocation",
+    "native:joinattributestable",
+    "native:joinbylocationsummary",
+    "native:joinbynearest",
+    
+    # --- Geometry Basics ---
+    "native:buffer",
+    "native:clip",
+    "native:intersection",
+    "native:difference",
+    "native:union",
+    "native:dissolve",
+    "native:fixgeometries",
+    "native:multiparttosingleparts",
+    "native:centroids",
+    "native:creategrid",
+    
+    # --- Data Management ---
+    "native:mergevectorlayers",
+    "native:package",
+    "native:orderbyexpression",
+    "native:removeduplicatesbyattribute",
+    "native:deleteduplicategeometries",
+    "qgis:exportaddgeometrycolumns",
+    
+    # --- Statistics ---
+    "native:basicstatisticsforfields",
+    "native:zonalstatisticsfb",
+    "qgis:listuniquevalues",
+    
+    # --- Raster Basics ---
+    "gdal:warpreproject",
+    "gdal:cliprasterbymasklayer",
+    "gdal:cliprasterbyextent",
+    "gdal:merge",
+    "gdal:translate",
+    "gdal:rastercalculator",
+]

@@ -1,0 +1,31 @@
+tool_ID = "grass:r.watershed"
+
+tool_name = "Flow Accumulation"
+
+brief_description = """Calculates accumulated flow to each cell based on flow direction. Determines the number of upslope cells that flow into each cell. Equivalent to ArcGIS Flow Accumulation."""
+
+parameters = """INPUT: Input DEM or flow direction raster. Type: [raster]
+OUTPUT: Output flow accumulation raster. Type: [raster]
+THRESHOLD: Minimum drainage area threshold. Type: [integer]"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def flow_accumulation():
+    input_path = 'D:/Data/filled_dem.tif'
+    output_path = 'D:/Output/flow_acc.tif'
+    
+    params = {
+        'elevation': input_path,
+        'accumulation': output_path,
+        'threshold': 500,
+        'GRASS_REGION_PARAMETER': None,
+        'GRASS_REGION_CELLSIZE_PARAMETER': 0
+    }
+    
+    result = processing.run("grass:r.watershed", params)
+    
+    acc_layer = QgsRasterLayer(result['accumulation'], 'Flow Accumulation')
+    QgsProject.instance().addMapLayer(acc_layer)
+
+flow_accumulation()"""

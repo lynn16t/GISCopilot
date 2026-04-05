@@ -1,0 +1,26 @@
+tool_ID = "native:union"
+
+tool_name = "Union (Update)"
+
+brief_description = """Combines features from input and overlay layers, preserving all features and splitting where they overlap. Equivalent to ArcGIS Union / Update."""
+
+parameters = """INPUT: Input vector layer. Type: [vector: any]
+OVERLAY: Overlay vector layer. Type: [vector: any]
+OUTPUT: Output union layer. Type: [vector: same as input]"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsVectorLayer
+
+def union():
+    params = {
+        'INPUT': 'D:/Data/layer1.shp',
+        'OVERLAY': 'D:/Data/layer2.shp',
+        'OUTPUT': 'D:/Output/union.shp'
+    }
+    
+    result = processing.run("native:union", params)
+    
+    layer = QgsVectorLayer(result['OUTPUT'], 'Union', 'ogr')
+    QgsProject.instance().addMapLayer(layer)
+
+union()"""

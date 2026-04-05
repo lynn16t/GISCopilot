@@ -68,9 +68,8 @@ class SessionContext:
     # ========================
 
     def set_task(self, task: str):
-        """记录用户原始任务，追加到 messages"""
+        """记录用户原始任务（不添加消息，由调用方统一添加）"""
         self.current_task = task
-        self.add_message("user", task)
 
     def set_data_overview(self, data_overview: List[str] | str):
         """

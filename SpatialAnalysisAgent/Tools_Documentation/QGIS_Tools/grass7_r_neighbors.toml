@@ -1,0 +1,33 @@
+tool_ID = "grass:r.neighbors"
+
+tool_name = "Focal Statistics"
+
+brief_description = """Calculates focal (neighborhood) statistics for a raster layer within a specified moving window. Equivalent to ArcGIS Focal Statistics / Point Statistics."""
+
+parameters = """input=name[required]
+    Name of input raster map
+output=name[required]
+    Name for output raster map
+size=integer
+    Neighborhood size (must be odd). Default: 3
+method=string
+    Statistics method: average, median, mode, minimum, maximum, range, stddev, sum, count, variance. Default: average"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def focal_statistics():
+    params = {
+        'input': 'D:/Data/raster.tif',
+        'output': 'D:/Output/focal_stats.tif',
+        'size': 5,
+        'method': 'average',
+        'GRASS_REGION_PARAMETER': None
+    }
+    
+    result = processing.run("grass:r.neighbors", params)
+    
+    layer = QgsRasterLayer(result['output'], 'Focal Statistics')
+    QgsProject.instance().addMapLayer(layer)
+
+focal_statistics()"""

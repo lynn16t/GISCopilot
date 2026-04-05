@@ -1,40 +1,30 @@
 tool_ID = "native:linedensity"
+
 tool_name = "Line Density"
-brief_description = """Calculates for each raster cell, the density measure of linear features within a circular neighbourhood. This measure is obtained by summing all the line segments intersecting the circular neighbourhood and dividing this sum by the area of such neighbourhood. A weighting factor can be applied to the line segments."""
-full_description = """Calculates for each raster cell, the density measure of linear features within a circular neighbourhood. This measure is obtained by summing all the line segments intersecting the circular neighbourhood and dividing this sum by the area of such neighbourhood. A weighting factor can be applied to the line segments."""
-parameters = """INPUT: Input line layer. Input vector layer containing line features. Type: [vector: any]
-WEIGHT: Weight field. Field of the layer containing the weight factor to use duringthe calculation. Type: [number]
-RADIUS: Search Radius. Radius of the circular neighbourhood. Units can be specifiedhere.. Type: [number] Default: 10
-PIXEL_SIZE: Pixel size. Pixel size of the output raster layer in layer units.The raster has square pixels.. Type: [number] Default: 10
-OUTPUT: Line density raster. The output as a raster layer. One of: Save to a Temporary File Save to File…. Type: [raster] Default: [Save to temporary file]"""
-outputs = "OUTPUT: Line density raster. The output line density raster layer.. Type: [raster]"
-code_example = """
-# Import necessary modules
-from qgis.core import QgsVectorLayer, QgsProject
-import processing
 
-def calculate_line_density():
-    # Define input and output paths
-    input_path = 'D:/Data/InputLines.shp'
-    output_path = 'C:/output_path/line_density.tif'
+brief_description = """Calculates kernel line density for line features within a search radius. Equivalent to ArcGIS Line Density."""
 
-    # Load the input line layer
-    input_layer = QgsVectorLayer(input_path, 'Input Line Layer', 'ogr')
+parameters = """INPUT: Input line vector layer. Type: [vector: line]
+WEIGHT: Weight field. Type: [tablefield: numeric]
+RADIUS: Search radius. Type: [number] Default: 10
+PIXEL_SIZE: Output raster cell size. Type: [number] Default: 10
+OUTPUT: Output density raster. Type: [raster]"""
 
-    # Define the parameters for the line density calculation
-    parameters = {
-        'INPUT': input_path,
-        'WEIGHT': 'weight_field',  # specify the name of the weight field in the layer
-        'RADIUS': 10,
-        'PIXEL_SIZE': 10,
-        'OUTPUT': output_path
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def line_density():
+    params = {
+        'INPUT': 'D:/Data/roads.shp',
+        'WEIGHT': '',
+        'RADIUS': 500,
+        'PIXEL_SIZE': 50,
+        'OUTPUT': 'D:/Output/line_density.tif'
     }
+    
+    result = processing.run("native:linedensity", params)
+    
+    layer = QgsRasterLayer(result['OUTPUT'], 'Line Density')
+    QgsProject.instance().addMapLayer(layer)
 
-    # Run the Line Density algorithm
-    result = processing.run('native:linedensity', parameters)
-
-    # Load the output raster layer to QGIS
-    line_density_layer = QgsProject.instance().addMapLayer(result['OUTPUT'])
-
-# Execute the function
-calculate_line_density()"""
+line_density()"""

@@ -295,93 +295,6 @@ class Solution():
 
         return response
 
-    # def get_LLM_reply(self,
-    #                   prompt,
-    #                   verbose=True,
-    #                   temperature=1,
-    #                   stream=True,
-    #                   retry_cnt=3,
-    #                   sleep_sec=10,
-    #                   system_role=None,
-    #                   model=None,
-    #                   ):
-    #
-    #     # Default values for system_role and model
-    #     if system_role is None:
-    #         system_role = self.role
-    #     if model is None:
-    #         model = self.model
-    #
-    #     # Create the client and initialize response container
-    #     client = create_openai_client()
-    #     response = None
-    #     self.chat_history.append({'role': 'user', 'content': prompt})
-    #
-    #     # Retry logic to handle failures
-    #     for attempt in range(retry_cnt):
-    #         try:
-    #             # Request completion from GPT with or without streaming
-    #             response = client.chat.completions.create(
-    #                 model=model,
-    #                 messages=[
-    #                     {"role": "system", "content": system_role},
-    #                     {"role": "user", "content": prompt},
-    #                 ],
-    #                 temperature=temperature,
-    #                 stream=stream
-    #             )
-    #             break  # If successful, exit the retry loop
-    #         except Exception as e:
-    #             print(f"Error during attempt {attempt + 1}/{retry_cnt}: {e}")
-    #             time.sleep(sleep_sec)
-    #     else:
-    #         raise ValueError("Failed to get a response from the LLM after several retries")
-    #
-    #     # Handle streaming response
-    #     response_chunks = []
-    #     final_content = ""
-    #
-    #     if stream:
-    #         for chunk in response:
-    #             response_chunks.append(chunk)
-    #             content = getattr(chunk.choices[0].delta, 'content', '').strip()
-    #
-    #             if content:
-    #                 final_content += content
-    #                 if verbose:
-    #                     print(content, end='', flush=True)  # Display in real-time
-    #
-    #     else:
-    #         # Handle non-streaming response
-    #         final_content = response.choices[0].message.content.strip()
-    #         print(final_content)
-    #
-    #     print('\n\n')
-    #
-    #     # Store response history and extract final content
-    #     response = response_chunks if stream else response
-    #     extracted_content = helper.extract_content_from_LLM_reply(response)
-    #
-    #     # Append to chat history for future interactions
-    #     self.chat_history.append({'role': 'assistant', 'content': extracted_content})
-    #
-    #     return final_content if stream else response
-
-    # def generate_task_name_with_gpt(task, client, model="gpt-3.5-turbo", max_tokens=100):
-    #     prompt = f"Given the following task description: '{task}', extract the key action or operation word that represents this task. Provide the task name in one or two words."
-    #     response = client.chat.completions.create(
-    #         model=model,
-    #         messages=[
-    #             {"role": "system", "content": "You are a helpful assistant."},
-    #             {"role": "user", "content": prompt},
-    #         ],
-    #         max_tokens=max_tokens,
-    #         temperature=0.5
-    #     )
-    #
-    #     task_name = response.choices[0].message['content'].strip()
-    #     return task_name
-
     def get_LLM_response_for_graph(self, execuate=True):
         # self.chat_history.append()
         response = self.get_LLM_reply(
@@ -592,20 +505,6 @@ class Solution():
 
         return self.assembly_LLM_response
 
-    # def __getstate__(self):
-    #     # Get the current state of the instance
-    #     state = self.__dict__.copy()
-    #
-    #     for method in self.async_methods_to_remove:
-    #         if method in state:
-    #             del state[method]
-    #
-    #     return state
-    #
-    # def __setstate__(self, state):
-    #     # Restore instance state (default behavior)
-    #     self.__dict__.update(state)
-    #
     def save_solution(self):
         #         , graph=True
         # Temporarily store and remove the streaming_callback before pickling

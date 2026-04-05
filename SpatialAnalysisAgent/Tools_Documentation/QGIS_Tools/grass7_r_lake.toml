@@ -1,0 +1,35 @@
+tool_ID = "grass:r.lake"
+
+tool_name = "Sink Detection"
+
+brief_description = """Fills a lake to a target water level from a given seed point. Can be used to identify and analyze sinks/depressions in a DEM. Equivalent to ArcGIS Sink."""
+
+parameters = """elevation=name[required]
+    Name of input elevation raster map
+water_level=float[required]
+    Water level
+lake=name[required]
+    Output lake raster map
+seed=name
+    Input raster seed map with starting point(s)
+coordinates=east,north
+    Coordinates of seed point"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def detect_sinks():
+    params = {
+        'elevation': 'D:/Data/dem.tif',
+        'water_level': 100.0,
+        'lake': 'D:/Output/sinks.tif',
+        'coordinates': '500000,4500000',
+        'GRASS_REGION_PARAMETER': None
+    }
+    
+    result = processing.run("grass:r.lake", params)
+    
+    layer = QgsRasterLayer(result['lake'], 'Sinks')
+    QgsProject.instance().addMapLayer(layer)
+
+detect_sinks()"""

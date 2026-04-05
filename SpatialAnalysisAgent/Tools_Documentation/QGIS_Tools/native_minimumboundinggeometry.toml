@@ -1,0 +1,28 @@
+tool_ID = "qgis:minimumboundinggeometry"
+
+tool_name = "Minimum Bounding Geometry"
+
+brief_description = """Creates minimum bounding geometry (convex hull, bounding box, circle, or oriented rectangle) around input features. Equivalent to ArcGIS Minimum Bounding Geometry."""
+
+parameters = """INPUT: Input vector layer. Type: [vector: any]
+FIELD: Field for grouping features. Type: [tablefield: any]
+TYPE: Geometry type. 0: Envelope, 1: Minimum Oriented Rectangle, 2: Minimum Enclosing Circle, 3: Convex Hull. Type: [enumeration] Default: 0
+OUTPUT: Output polygon layer. Type: [vector: polygon]"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsVectorLayer
+
+def min_bounding_geometry():
+    params = {
+        'INPUT': 'D:/Data/points.shp',
+        'FIELD': '',
+        'TYPE': 3,
+        'OUTPUT': 'D:/Output/convex_hull.shp'
+    }
+    
+    result = processing.run("qgis:minimumboundinggeometry", params)
+    
+    layer = QgsVectorLayer(result['OUTPUT'], 'Minimum Bounding', 'ogr')
+    QgsProject.instance().addMapLayer(layer)
+
+min_bounding_geometry()"""

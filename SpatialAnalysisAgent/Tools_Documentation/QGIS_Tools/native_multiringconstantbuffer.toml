@@ -1,36 +1,28 @@
 tool_ID = "native:multiringconstantbuffer"
-tool_name = "Multi-ring buffer (constant distance)"
-brief_description = """Computes multi-ring (donut) buffer for the features of the input layer, using a fixed or dynamic distance and number of rings."""
-full_description = """Computes multi-ring (donut) buffer for the features of the input layer, using a fixed or dynamic distance and number of rings.
-Allows features in-place modification of polygon features"""
-parameters = """
-INPUT: Input layer. Input vector layer. Type: [vector: any] 
-RINGS: Number of rings. The number of rings.It can be a unique value (same number of rings for all thefeatures) or it can be taken from features data (the number ofrings depends on feature values).. Type: [number ] Default: 1 
-DISTANCE: Distance between rings. Distance between the rings.It can be a unique value (same distance for all the features)or it can be taken from features data (the distance depends onfeature values).. Type: [number ] Default: 1.0 
-OUTPUT: Multi-ring buffer (constant distance). Specify the output polygon vector layer. One of: Create Temporary Layer ( 
-TEMPORARY_OUTPUT ) Save to File… Save to Geopackage… Save to Database Table… Append to Layer… The file encoding can also be changed here.. Type: [vector: polygon] Default: [Create temporary layer] outputs = 
-OUTPUT: Multi-ring buffer (constant distance). The output polygon vector layer.. Type: [vector: polygon]
-"""
-code_example = """
-import processing
-from qgis.core import QgsVectorLayer, QgsProject
 
-def multiring_constant_buffer():
-    input_path = 'D:/Data/InputLayer.shp'
-    output_path = 'C:/output_path/output_multiring_buffer.shp'
+tool_name = "Multiple Ring Buffer"
 
-    input_layer = QgsVectorLayer(input_path, 'InputLayer', 'ogr')
+brief_description = """Creates multiple buffer rings around input features at specified distances. Equivalent to ArcGIS Multiple Ring Buffer."""
 
-    parameters = {
-        'INPUT': input_layer,
+parameters = """INPUT: Input vector layer. Type: [vector: any]
+RINGS: Number of rings. Type: [number] Default: 1
+DISTANCE: Distance between rings. Type: [number] Default: 1
+OUTPUT: Output polygon layer with buffer rings. Type: [vector: polygon]"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsVectorLayer
+
+def multi_ring_buffer():
+    params = {
+        'INPUT': 'D:/Data/facilities.shp',
         'RINGS': 3,
-        'DISTANCE': 5.0,
-        'OUTPUT': output_path  # Options: Create Temporary Layer ( TEMPORARY_OUTPUT ) Save to File… Save to Geopackage… Save to Database Table… Append to Layer…
+        'DISTANCE': 500,
+        'OUTPUT': 'D:/Output/multi_buffer.shp'
     }
+    
+    result = processing.run("native:multiringconstantbuffer", params)
+    
+    layer = QgsVectorLayer(result['OUTPUT'], 'Multi Ring Buffer', 'ogr')
+    QgsProject.instance().addMapLayer(layer)
 
-    result = processing.run(\"""native:multiringconstantbuffer\", parameters)
-
-    output_layer = QgsVectorLayer(result['OUTPUT'], 'Multi-Ring Buffer', 'ogr')
-    QgsProject.instance().addMapLayer(output_layer)
-
-multiring_constant_buffer()"""
+multi_ring_buffer()"""
