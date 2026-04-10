@@ -30,6 +30,7 @@ class GuardGate:
                 action_type: 处理决策类型，可选值：
                     "show_code"         → 代码发到 CodeEditor，聊天框显示反馈
                     "confirm_plan"      → 展示 plan，等待用户确认
+                    "trigger_analysis"  → 用户确认任务，触发完整分析流水线
                     "confirm_knowledge" → 轻量确认，确认后写入知识库
                     "show_message"      → 直接在聊天框显示
                 **kwargs: 根据不同 action_type 附带的数据
@@ -60,6 +61,19 @@ class GuardGate:
                 "confirm_plan",
                 plan=parsed.content,
                 plan_text=self._format_plan_for_display(parsed.content),
+            )
+
+        elif parsed.output_type == OutputType.GIS_TASK_READY:
+            # 用户确认任务，提取精炼描述，准备触发分析流水线
+            refined_task = parsed.content
+            # 从原始回复中提取 [TASK_CONFIRMED] 之前的确认消息（如有）
+            raw = parsed.raw_response
+            tag_idx = raw.find('[TASK_CONFIRMED]')
+            confirmation_message = raw[:tag_idx].strip() if tag_idx > 0 else ""
+            return self.Action(
+                "trigger_analysis",
+                refined_task=refined_task,
+                confirmation_message=confirmation_message,
             )
 
         elif parsed.output_type == OutputType.KNOWLEDGE_UPDATE:

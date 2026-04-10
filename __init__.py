@@ -23,38 +23,112 @@
  This script initializes the plugin, making it known to QGIS.
 """
 
-# Guard: ensure sys.stderr/stdout are not None before any library imports.
-# QGIS Python environment sometimes sets these to None, which crashes
-# numpy, pandas, and other libraries that write warnings during import.
-import sys as _sys, io as _io
-if _sys.stderr is None:
-    _sys.stderr = _io.StringIO()
-if _sys.stdout is None:
-    _sys.stdout = _io.StringIO()
+# ============================================================================
+# Defensive initialization: prevent 'NoneType has no attribute write' crashes.
+# ============================================================================
+# On Windows, QGIS may run under pythonw.exe where sys.stderr/sys.stdout are
+# None. Many libraries (numpy, pandas, pyarrow, gdal, ...) write to sys.stderr
+# during import or at runtime. If stderr is None, these writes crash with
+# "AttributeError: 'NoneType' object has no attribute 'write'".
+#
+# The specific crash we protect against is in
+#   numpy/core/_multiarray_umath.py  line 43
+# which does `sys.stderr.write(msg + tb_msg)` unconditionally before raising
+# ImportError. This fires whenever a C extension compiled against NumPy 1.x is
+# imported under NumPy 2.x (e.g. some GDAL/pyarrow wheels).
+#
+# We install:
+#   1) A _DummyStream assigned to any None stream (no-op write/flush).
+#   2) A monkey-patch on numpy.core._multiarray_umath.__getattr__ that
+#      re-ensures sys.stderr is writable before delegating to the original.
+# ============================================================================
+import sys as _sys
+
+
+class _DummyStream:
+    """File-like black hole used when sys.stderr/sys.stdout are None."""
+    encoding = "utf-8"
+    errors = "replace"
+
+    def write(self, *_args, **_kwargs):
+        return 0
+
+    def flush(self):
+        pass
+
+    def writelines(self, _lines):
+        pass
+
+    def isatty(self):
+        return False
+
+    def fileno(self):
+        raise OSError("DummyStream has no fileno")
+
+    def close(self):
+        pass
+
+
+def _ensure_std_streams():
+    """Guarantee sys.stderr and sys.stdout have a usable write() method."""
+    if _sys.stderr is None or not hasattr(_sys.stderr, "write"):
+        _sys.stderr = _DummyStream()
+    if _sys.stdout is None or not hasattr(_sys.stdout, "write"):
+        _sys.stdout = _DummyStream()
+
+
+_ensure_std_streams()
+
+
+def _patch_numpy_stderr_guard():
+    """Monkey-patch numpy's compat shim so it never crashes on None stderr."""
+    try:
+        import numpy.core._multiarray_umath as _mu  # noqa: E402
+    except Exception:
+        return
+    _orig_getattr = getattr(_mu, "__getattr__", None)
+    if _orig_getattr is None or getattr(_orig_getattr, "_sa_agent_patched", False):
+        return
+
+    def _safe_getattr(attr_name, _orig=_orig_getattr):
+        _ensure_std_streams()
+        return _orig(attr_name)
+
+    try:
+        _safe_getattr._sa_agent_patched = True
+        _mu.__getattr__ = _safe_getattr
+    except Exception:
+        pass
+
 
 # Pre-import libraries whose DLLs crash when first loaded in a worker thread.
 # pyarrow in particular causes "Windows fatal exception: access violation"
 # if its native DLL is first loaded outside the main thread.
-# We suppress the QGIS exception hook during these imports so that
-# compatibility warnings (e.g. numpy version mismatch) don't pop up
-# as error dialogs — they are non-fatal for plugin loading.
-try:
+# Suppress the QGIS exception hook during these imports so that numpy
+# compatibility warnings (non-fatal) do not pop up as error dialogs.
+def _safe_pre_imports():
     _orig_excepthook = _sys.excepthook
-    _sys.excepthook = lambda *args: None  # suppress during pre-import
-    import warnings as _warnings
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("ignore")
-        try:
-            import pyarrow  # noqa: F401
-        except Exception:
-            pass
-        try:
-            import geopandas  # noqa: F401
-        except Exception:
-            pass
-    _sys.excepthook = _orig_excepthook
-except Exception:
-    pass
+    try:
+        _sys.excepthook = lambda *_args: None  # suppress during pre-import
+        import warnings as _warnings
+        with _warnings.catch_warnings():
+            _warnings.simplefilter("ignore")
+            try:
+                import pyarrow  # noqa: F401
+            except Exception:
+                pass
+            try:
+                import geopandas  # noqa: F401
+            except Exception:
+                pass
+    except Exception:
+        pass
+    finally:
+        _sys.excepthook = _orig_excepthook
+
+
+_safe_pre_imports()
+_patch_numpy_stderr_guard()
 
 
 # noinspection PyPep8Naming
@@ -64,6 +138,9 @@ def classFactory(iface):  # pylint: disable=invalid-name
     :param iface: A QGIS interface instance.
     :type iface: QgsInterface
     """
-    #
+    # Defensive: in case another plugin or QGIS code reset streams to None
+    # between __init__.py load and classFactory invocation.
+    _ensure_std_streams()
+    _patch_numpy_stderr_guard()
     from .SpatialAnalysisAgent import SpatialAnalysisAgent
     return SpatialAnalysisAgent(iface)

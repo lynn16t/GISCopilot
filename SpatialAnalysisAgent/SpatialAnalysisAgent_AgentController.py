@@ -90,8 +90,9 @@ class AgentWorkerThread(QThread):
 
     def run(self):
         """在线程中执行目标函数，捕获 stdout"""
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
+        # Snapshot originals; guard against None (pythonw.exe / no console)
+        original_stdout = sys.stdout if sys.stdout is not None else io.StringIO()
+        original_stderr = sys.stderr if sys.stderr is not None else io.StringIO()
 
         try:
             redirector = _ThreadStreamRedirector()
@@ -1211,8 +1212,28 @@ class AgentController(QObject):
         print(f"[ConversationLoop] Detected output type: {action.action_type}")
 
         # 5. 根据 action 路由
-        if action.action_type == "confirm_plan":
-            # PLAN 类型 → 触发状态机的 PLAN_READY
+        if action.action_type == "trigger_analysis":
+            # GIS_TASK_READY → 用户确认任务，触发完整分析流水线
+            self.session.add_message("assistant", response)
+            refined_task = action.data["refined_task"]
+            confirmation_message = action.data.get("confirmation_message", "")
+
+            # 在聊天框显示确认消息
+            if confirmation_message:
+                self.chat_response.emit(confirmation_message)
+            self.chat_response.emit(f"任务已确认，正在启动分析流水线...")
+
+            # 更新任务描述（用精炼的任务描述）
+            self.task = refined_task
+            self.session.set_task(refined_task)
+
+            # 触发完整分析流水线（当前已在 worker 线程中，直接调用）
+            self.state = AgentState.ANALYZING
+            self._run_analysis()
+            print("[ConversationLoop] Triggered _run_analysis() via GIS_TASK_READY")
+
+        elif action.action_type == "confirm_plan":
+            # PLAN 类型 → 触发状态机的 PLAN_READY（保留兼容）
             self.session.add_message("assistant", response)
             self._handle_plan_from_conversation(action)
 

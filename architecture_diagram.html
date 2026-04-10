@@ -1,0 +1,1366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpatialAnalysisAgent - 完整技术架构图 v2</title>
+<style>
+/* ============================================================
+   CSS Variables & Dark/Light Mode
+   ============================================================ */
+:root {
+  --purple-bg: #ede9fe; --purple-border: #7c3aed; --purple-text: #5b21b6;
+  --blue-bg: #dbeafe; --blue-border: #2563eb; --blue-text: #1e40af;
+  --amber-bg: #fef3c7; --amber-border: #d97706; --amber-text: #92400e;
+  --cyan-bg: #ccfbf1; --cyan-border: #0d9488; --cyan-text: #065f46;
+  --gray-bg: #f3f4f6; --gray-border: #6b7280; --gray-text: #374151;
+  --red-bg: #fee2e2; --red-border: #dc2626; --red-text: #991b1b;
+  --green-bg: #d1fae5; --green-border: #059669; --green-text: #065f46;
+  --bg: #ffffff; --surface: #f9fafb; --text: #111827;
+  --text-muted: #6b7280; --line: #d1d5db; --connector: #9ca3af;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --purple-bg: #2e1065; --purple-border: #a78bfa; --purple-text: #c4b5fd;
+    --blue-bg: #1e3a5f; --blue-border: #60a5fa; --blue-text: #93c5fd;
+    --amber-bg: #451a03; --amber-border: #fbbf24; --amber-text: #fde68a;
+    --cyan-bg: #064e3b; --cyan-border: #2dd4bf; --cyan-text: #99f6e4;
+    --gray-bg: #1f2937; --gray-border: #9ca3af; --gray-text: #d1d5db;
+    --red-bg: #450a0a; --red-border: #f87171; --red-text: #fca5a5;
+    --green-bg: #064e3b; --green-border: #34d399; --green-text: #a7f3d0;
+    --bg: #0f172a; --surface: #1e293b; --text: #f1f5f9;
+    --text-muted: #94a3b8; --line: #334155; --connector: #64748b;
+  }
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+  background: var(--bg); color: var(--text); line-height: 1.6;
+  padding: 2rem; max-width: 1300px; margin: 0 auto;
+}
+h1 { font-size: 2rem; text-align: center; margin-bottom: 0.3rem; }
+h2 { font-size: 1.4rem; margin: 2rem 0 1rem; border-bottom: 2px solid var(--line); padding-bottom: 0.5rem; }
+h3 { font-size: 1.05rem; margin: 1rem 0 0.5rem; }
+.subtitle { text-align: center; color: var(--text-muted); margin-bottom: 2rem; font-size: 0.95rem; }
+
+/* ============================================================
+   Layer Containers
+   ============================================================ */
+.layer {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem;
+}
+.layer-title {
+  font-size: 1.15rem; font-weight: 700; margin-bottom: 1rem;
+  display: flex; align-items: center; gap: 0.5rem;
+  cursor: pointer; user-select: none;
+}
+.layer-title .toggle { font-size: 0.8rem; color: var(--text-muted); transition: transform 0.2s; }
+.layer-title .toggle.collapsed { transform: rotate(-90deg); }
+.layer-body { overflow: hidden; transition: max-height 0.3s ease; }
+.layer-body.collapsed { max-height: 0 !important; padding: 0; }
+
+/* ============================================================
+   Connectors
+   ============================================================ */
+.connector { display: flex; justify-content: center; padding: 0.4rem 0; }
+.connector svg { width: 36px; height: 36px; }
+.connector svg path { stroke: var(--connector); stroke-width: 2; fill: none; }
+.connector svg polygon { fill: var(--connector); }
+
+/* ============================================================
+   Nodes
+   ============================================================ */
+.node {
+  border-radius: 8px; padding: 0.75rem 1rem; margin: 0.5rem 0;
+  border-left: 4px solid; font-size: 0.88rem;
+}
+.node-purple { background: var(--purple-bg); border-color: var(--purple-border); color: var(--purple-text); }
+.node-blue   { background: var(--blue-bg);   border-color: var(--blue-border);   color: var(--blue-text); }
+.node-amber  { background: var(--amber-bg);  border-color: var(--amber-border);  color: var(--amber-text); }
+.node-cyan   { background: var(--cyan-bg);   border-color: var(--cyan-border);   color: var(--cyan-text); }
+.node-gray   { background: var(--gray-bg);   border-color: var(--gray-border);   color: var(--gray-text); }
+.node-red    { background: var(--red-bg);     border-color: var(--red-border);    color: var(--red-text); }
+.node-green  { background: var(--green-bg);   border-color: var(--green-border);  color: var(--green-text); }
+.node strong { display: block; margin-bottom: 0.2rem; }
+.node code { background: rgba(0,0,0,0.08); padding: 0.1rem 0.3rem; border-radius: 3px; font-size: 0.82rem; }
+
+/* Gate */
+.gate {
+  border: 2px dashed var(--purple-border); background: var(--purple-bg);
+  padding: 1rem; border-radius: 10px; text-align: center; margin: 0.5rem 0;
+}
+.gate-label { font-weight: 700; color: var(--purple-text); font-size: 1rem; }
+
+/* Warning */
+.warning {
+  border: 2px solid var(--red-border); background: var(--red-bg); color: var(--red-text);
+  padding: 0.75rem 1rem; border-radius: 8px; margin: 0.5rem 0;
+  font-weight: 600; text-align: center;
+}
+
+/* ============================================================
+   Grids & Flex
+   ============================================================ */
+.flow-row { display: flex; gap: 1rem; flex-wrap: wrap; align-items: stretch; }
+.flow-row > * { flex: 1; min-width: 200px; }
+.flow-vertical { display: flex; flex-direction: column; gap: 0; }
+.flow-vertical .mini-arrow { text-align: center; color: var(--connector); font-size: 1.2rem; line-height: 1.5; }
+
+/* State machine pills */
+.state-machine { display: flex; flex-wrap: wrap; gap: 0.6rem; justify-content: center; align-items: center; padding: 1rem 0; }
+.state-box { border-radius: 999px; padding: 0.45rem 1rem; font-weight: 600; font-size: 0.82rem; text-align: center; white-space: nowrap; }
+.state-arrow { font-size: 1.4rem; color: var(--connector); }
+
+/* Badges */
+.btn-badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.78rem; font-weight: 600; margin: 0.1rem; }
+.btn-purple { background: var(--purple-border); color: #fff; }
+.btn-red { background: var(--red-border); color: #fff; }
+.btn-gray { background: var(--gray-border); color: #fff; }
+
+/* Pipeline table */
+.pipeline-table { width: 100%; border-collapse: collapse; font-size: 0.84rem; margin: 0.5rem 0; }
+.pipeline-table th, .pipeline-table td { border: 1px solid var(--line); padding: 0.5rem 0.7rem; text-align: left; vertical-align: top; }
+.pipeline-table th { background: var(--surface); font-weight: 700; }
+.pipeline-table tr:hover td { background: var(--surface); }
+
+/* Tags */
+.llm-tag { display: inline-block; background: var(--blue-border); color: #fff; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.73rem; font-weight: 700; }
+.no-llm-tag { display: inline-block; background: var(--cyan-border); color: #fff; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.73rem; font-weight: 700; }
+.inject-tag { display: inline-block; background: var(--amber-border); color: #fff; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.73rem; margin: 0.1rem; }
+.human-tag { display: inline-block; background: var(--purple-border); color: #fff; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.73rem; font-weight: 700; }
+.guard-tag { display: inline-block; background: var(--red-border); color: #fff; padding: 0.1rem 0.4rem; border-radius: 3px; font-size: 0.73rem; font-weight: 700; }
+
+/* Knowledge grid */
+.knowledge-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1rem; }
+.knowledge-card { border-radius: 10px; padding: 1rem; border: 2px solid; }
+.knowledge-card h4 { margin-bottom: 0.4rem; }
+.knowledge-card ul { padding-left: 1.2rem; font-size: 0.84rem; }
+
+/* Debug loop */
+.debug-loop {
+  border: 2px solid var(--red-border); border-radius: 10px; padding: 1rem; margin: 0.5rem 0; position: relative;
+}
+.debug-loop::before {
+  content: "Max 5 retries"; position: absolute; top: -10px; right: 1rem;
+  background: var(--red-border); color: #fff; padding: 0.1rem 0.5rem;
+  border-radius: 4px; font-size: 0.73rem; font-weight: 700;
+}
+
+/* Thread columns */
+.thread-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+@media (max-width: 700px) { .thread-cols { grid-template-columns: 1fr; } }
+.thread-box { border-radius: 10px; padding: 1rem; border: 2px solid; }
+.signal-list { list-style: none; padding: 0; font-size: 0.84rem; }
+.signal-list li { padding: 0.25rem 0; border-bottom: 1px solid var(--line); }
+.signal-list li:last-child { border-bottom: none; }
+.signal-name { font-family: monospace; font-weight: 600; }
+
+/* API rules */
+.api-rule { display: flex; align-items: center; gap: 0.75rem; padding: 0.35rem 0; font-size: 0.84rem; }
+.api-prefix { font-family: monospace; background: var(--gray-bg); border: 1px solid var(--gray-border); padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.78rem; white-space: nowrap; }
+
+/* Sequence diagram */
+.seq-diagram { font-family: monospace; font-size: 0.82rem; background: var(--gray-bg); border: 1px solid var(--line); border-radius: 8px; padding: 1rem 1.5rem; overflow-x: auto; white-space: pre; line-height: 1.5; color: var(--text); }
+</style>
+</head>
+<body>
+
+<h1>SpatialAnalysisAgent 完整技术架构图 v2</h1>
+<p class="subtitle">
+  QGIS Plugin &nbsp;|&nbsp; 对话循环 + [TASK_CONFIRMED] 触发 + 分析流水线 + 代码执行 &nbsp;|&nbsp;
+  Phase 5 统一架构
+</p>
+
+<!-- ============================================================
+     LAYER 0: 全局概览 — 端到端序列图
+     ============================================================ -->
+<div class="layer" id="layer0">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    全局概览：端到端序列图（用户 → 对话 → 确认 → 分析 → 执行）
+  </div>
+  <div class="layer-body">
+    <div class="seq-diagram">
+User          DockWidget(GUI)       AgentController        SessionContext       LLM(API)         OutputParser+GuardGate
+ │                │                      │                      │                  │                      │
+ │  输入任务文本   │                      │                      │                  │                      │
+ │───────────────>│  handle_text_input() │                      │                  │                      │
+ │                │─────────────────────>│  _start_worker(      │                  │                      │
+ │                │                      │  _run_conversation_  │                  │                      │
+ │                │                      │  loop, msg)          │                  │                      │
+ │                │                      │                      │                  │                      │
+ │                │                      │  ┌─ Worker Thread ───────────────────────────────────────────┐ │
+ │                │                      │  │ add_message("user")│                  │                   │ │
+ │                │                      │  │──────────────────>│                  │                   │ │
+ │                │                      │  │ build_messages(    │                  │                   │ │
+ │                │                      │  │  step="conversation")                │                   │ │
+ │                │                      │  │──────────────────>│  [系统 prompt     │                   │ │
+ │                │                      │  │                   │   + 数据概览      │                   │ │
+ │                │                      │  │                   │   + 历史消息      │                   │ │
+ │                │                      │  │                   │   + 项目知识]     │                   │ │
+ │                │                      │  │<──────────────────│                  │                   │ │
+ │                │                      │  │                   │                  │                   │ │
+ │                │                      │  │  unified_llm_call(messages)          │                   │ │
+ │                │                      │  │─────────────────────────────────────>│                   │ │
+ │                │                      │  │                   │    stream tokens │                   │ │
+ │                │                      │  │<─────────────────────────────────────│                   │ │
+ │                │                      │  │                   │                  │                   │ │
+ │                │                      │  │  process_llm_output(response)        │                   │ │
+ │                │                      │  │──────────────────────────────────────────────────────────>│ │
+ │                │                      │  │                   │                  │   parse() →       │ │
+ │                │                      │  │                   │                  │   decide() →      │ │
+ │                │                      │  │                   │                  │   Action          │ │
+ │                │                      │  │<──────────────────────────────────────────────────────────│ │
+ │                │                      │  │                   │                  │                   │ │
+ │                │                      │  │  === 路由分支 ===  │                  │                   │ │
+ │                │                      │  │                   │                  │                   │ │
+ │                │                      │  │  [QUESTION/CHAT]  │                  │                   │ │
+ │  &lt;── chat_response ──────────────────│  │  → emit 到聊天框  │                  │                   │ │
+ │                │                      │  │  → 等待用户下一条  │                  │                   │ │
+ │                │                      │  │                   │                  │                   │ │
+ │                │                      │  │  [GIS_TASK_READY] │                  │                   │ │
+ │                │                      │  │  LLM 输出含        │                  │                   │ │
+ │                │                      │  │  [TASK_CONFIRMED]  │                  │                   │ │
+ │                │                      │  │  → state=ANALYZING │                  │                   │ │
+ │                │                      │  │  → _run_analysis() │                  │                   │ │
+ │                │                      │  │  → ... 6 步流水线  │                  │                   │ │
+ │                │                      │  │  → state=PLAN_READY│                  │                   │ │
+ │  &lt;── plan_ready ─────────────────────│  │                   │                  │                   │ │
+ │                │                      │  └───────────────────────────────────────────────────────────┘ │
+ │  看到方案卡片   │                      │                      │                  │                      │
+ │  点击「确认」   │                      │                      │                  │                      │
+ │───────────────>│  CONFIRM_PLAN        │                      │                  │                      │
+ │                │─────────────────────>│  _run_execution()    │                  │                      │
+ │                │                      │  → 代码生成 + 审查    │                  │                      │
+ │                │                      │  → exec() + 调试循环  │                  │                      │
+ │                │                      │  → state=RESULT_READY │                  │                      │
+ │  &lt;── result_ready ───────────────────│                      │                  │                      │
+ │  看到执行结果   │                      │                      │                  │                      │
+ │  选择后续动作   │                      │                      │                  │                      │
+ │                │                      │                      │                  │                      │
+    </div>
+    <div class="node node-amber" style="margin-top:1rem;">
+      <strong>核心设计理念</strong>
+      对话循环只负责理解意图、反问、收集参数、确认任务。用户确认后，LLM 输出 <code>[TASK_CONFIRMED]</code>
+      标记，OutputParser 检测到后触发完整分析流水线（embedding 检索 + LLM 工具选择 + TOML 文档 + GraphML）。<br>
+      LLM 在对话阶段<strong>永远不输出 JSON 执行计划</strong>，Plan JSON 由分析流水线中的 tool_selection 步骤生成。
+    </div>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 1: 用户输入入口
+     ============================================================ -->
+<div class="layer" id="layer1">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第一层：用户输入入口 &mdash; DockWidget (GUI)
+  </div>
+  <div class="layer-body">
+    <div class="flow-row">
+      <div class="node node-gray">
+        <strong>统一输入框 <code>task_LineEdit</code></strong>
+        用户在此输入自然语言（中文/英文均可）<br>
+        按 <code>run_button</code> 或回车发送<br>
+        <small>文件：<code>SpatialAnalysisAgent_dockwidget.py</code></small>
+      </div>
+      <div class="node node-gray">
+        <strong>多 Tab 界面</strong>
+        Chat 面板 | CodeEditor 面板 | Output 面板 | Graph 面板 | Knowledge 面板 | Settings
+      </div>
+    </div>
+    <div class="flow-row" style="margin-top:0.5rem;">
+      <div class="node node-cyan">
+        <strong>数据加载 <code>loadData</code> 按钮</strong>
+        加载 QGIS 当前项目中的图层路径 → <code>data_pathLineEdit</code><br>
+        自动监听图层增删：<code>layerWasAdded</code> / <code>layerWillBeRemoved</code> 信号<br>
+        数据路径传入 <code>AgentController.data_path</code>
+      </div>
+      <div class="node node-cyan">
+        <strong>Settings 面板</strong>
+        API Key 输入 → <code>ProviderDetectionWorker</code> (QThread) 自动检测 Provider<br>
+        模型选择 (GPT-5 / Claude / DeepSeek / Ollama / ...)<br>
+        Reasoning Effort 滑块 | Code Review 开关
+      </div>
+    </div>
+    <div class="node node-purple" style="margin-top:0.5rem;">
+      <strong>所有用户输入 → <code>handle_text_input(message)</code></strong>
+      Phase 5 统一入口。不管当前处于什么非阻塞状态（IDLE / PLAN_READY / RESULT_READY / CONVERSING），<br>
+      都进入同一个 <code>_run_conversation_loop</code>。阻塞状态（ANALYZING / EXECUTING）则提示"正在处理中"。
+    </div>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 2: 状态机总览
+     ============================================================ -->
+<div class="layer" id="layer2">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第二层：状态机总览（6 状态 + 10 动作 + 转换规则）
+  </div>
+  <div class="layer-body">
+    <!-- Visual state machine -->
+    <div class="state-machine">
+      <div class="state-box node-gray">IDLE</div>
+      <span class="state-arrow">→</span>
+      <div class="state-box node-blue">ANALYZING</div>
+      <span class="state-arrow">→</span>
+      <div class="state-box node-purple" style="border:2px dashed var(--purple-border);">PLAN_READY</div>
+      <span class="state-arrow">→</span>
+      <div class="state-box node-red">EXECUTING</div>
+      <span class="state-arrow">→</span>
+      <div class="state-box node-purple" style="border:2px dashed var(--purple-border);">RESULT_READY</div>
+      <span class="state-arrow">→</span>
+      <div class="state-box node-gray">IDLE</div>
+    </div>
+    <div style="text-align:center;margin:0.25rem 0;">
+      <span class="state-box node-amber" style="display:inline-block;">CONVERSING</span>
+      <span style="color:var(--text-muted);font-size:0.84rem;margin-left:0.5rem;">
+        ↔ 可从 PLAN_READY / RESULT_READY 进入，生成新方案后回到 PLAN_READY
+      </span>
+    </div>
+
+    <div class="warning" style="margin-top:1rem;">
+      核心安全规则：所有涉及代码执行的转换只能由用户按钮触发，AI 永远不能自行执行代码
+    </div>
+
+    <h3 style="margin-top:1rem;">完整状态转换表</h3>
+    <table class="pipeline-table">
+      <thead>
+        <tr><th>转换</th><th>触发方式</th><th>处理函数</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>任意非阻塞 → 对话循环</td>
+          <td>用户发送文本</td>
+          <td><code>handle_text_input()</code> → <code>_run_conversation_loop()</code></td>
+          <td>Phase 5 统一入口，OutputParser 自动路由</td>
+        </tr>
+        <tr>
+          <td>对话循环 → ANALYZING</td>
+          <td><span class="guard-tag">OutputParser</span> 检测到 <code>[TASK_CONFIRMED]</code></td>
+          <td><code>_run_conversation_loop()</code> 内部调用 <code>_run_analysis()</code></td>
+          <td>LLM 判断用户确认 → 自动触发分析流水线</td>
+        </tr>
+        <tr>
+          <td>ANALYZING → PLAN_READY</td>
+          <td>自动完成</td>
+          <td><code>_run_analysis()</code> 末尾 emit <code>plan_ready</code></td>
+          <td><span class="human-tag">门控 1</span> 流水线暂停，等用户按按钮</td>
+        </tr>
+        <tr>
+          <td>PLAN_READY → EXECUTING</td>
+          <td><span class="human-tag">用户点击「确认执行」</span></td>
+          <td><code>_handle_confirm_plan()</code> → <code>_run_execution()</code></td>
+          <td>唯一触发代码执行的路径</td>
+        </tr>
+        <tr>
+          <td>PLAN_READY → CONVERSING</td>
+          <td>用户点击「我有修改」</td>
+          <td><code>_handle_modify_plan()</code> → <code>_run_conversation_loop()</code></td>
+          <td>进入对话循环讨论修改</td>
+        </tr>
+        <tr>
+          <td>PLAN_READY → IDLE</td>
+          <td>用户点击「取消」</td>
+          <td><code>_handle_cancel()</code></td>
+          <td>终止 worker 线程，清理状态</td>
+        </tr>
+        <tr>
+          <td>EXECUTING → RESULT_READY</td>
+          <td>自动完成</td>
+          <td><code>_run_execution()</code> 末尾 emit <code>result_ready</code></td>
+          <td><span class="human-tag">门控 2</span> 执行完暂停，等用户反馈</td>
+        </tr>
+        <tr>
+          <td>RESULT_READY → IDLE</td>
+          <td>用户点击「完成」</td>
+          <td><code>_handle_finish()</code></td>
+          <td>任务结束，emit <code>task_finished</code></td>
+        </tr>
+        <tr>
+          <td>RESULT_READY → 对话循环</td>
+          <td>用户追问/报错</td>
+          <td><code>_handle_report_error()</code> / <code>_handle_new_analysis()</code></td>
+          <td>走 <code>_run_conversation_loop</code>，可能产生新 [TASK_CONFIRMED]</td>
+        </tr>
+        <tr>
+          <td>RESULT_READY → CONVERSING</td>
+          <td>用户微调方案</td>
+          <td><code>_handle_tweak_plan()</code> → <code>_run_plan_revision()</code></td>
+          <td>LLM 基于旧方案修改 → 回到 PLAN_READY</td>
+        </tr>
+        <tr>
+          <td>任意状态 → IDLE</td>
+          <td>用户中断</td>
+          <td><code>_handle_interrupt()</code> / <code>_handle_cancel()</code></td>
+          <td>terminate worker thread，重置状态</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3 style="margin-top:1rem;">动态按钮组 <code>_setup_action_buttons()</code></h3>
+    <div class="flow-row" style="margin-top:0.5rem;">
+      <div class="node node-purple">
+        <strong>PLAN_READY</strong>
+        <span class="btn-badge btn-purple">确认执行</span>
+        <span class="btn-badge btn-purple">我有修改</span>
+        <span class="btn-badge btn-gray">取消</span>
+      </div>
+      <div class="node node-purple">
+        <strong>RESULT_READY</strong>
+        <span class="btn-badge btn-purple">继续追问</span>
+        <span class="btn-badge btn-purple">微调方案</span>
+        <span class="btn-badge btn-red">结果有误</span>
+        <span class="btn-badge btn-gray">完成</span>
+      </div>
+      <div class="node node-blue">
+        <strong>ANALYZING / EXECUTING</strong>
+        <span class="btn-badge btn-red">中断</span>
+      </div>
+      <div class="node node-gray">
+        <strong>IDLE / CONVERSING</strong>
+        无动态按钮（仅输入框 + 发送）
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 3: 对话循环（Phase 5 核心）
+     ============================================================ -->
+<div class="layer" id="layer3">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第三层：对话循环 <code>_run_conversation_loop()</code> &mdash; Phase 5 核心
+  </div>
+  <div class="layer-body">
+
+    <div class="node node-amber">
+      <strong>统一入口</strong>
+      所有非阻塞状态的用户输入都走此方法。在 <code>AgentWorkerThread</code> 中运行（不阻塞 GUI）。<br>
+      文件：<code>SpatialAnalysisAgent_AgentController.py</code> → <code>_run_conversation_loop(message)</code>
+    </div>
+
+    <h3>对话循环内部流程</h3>
+    <div class="flow-vertical" style="max-width:900px;margin:0.5rem auto;">
+      <div class="node node-gray">
+        <strong>Step 1: 记录用户消息</strong>
+        <code>session.add_message("user", message)</code>
+      </div>
+      <div class="mini-arrow">↓</div>
+      <div class="node node-cyan">
+        <strong>Step 2: 组装 LLM 消息</strong>
+        <code>session.build_messages(step="conversation", step_instruction=message)</code><br>
+        注入：<code>CONVERSATION_SYSTEM_PROMPT</code> + 数据概览 + 历史消息 + 项目知识 + 当前 plan（如有）
+      </div>
+      <div class="mini-arrow">↓</div>
+      <div class="node node-blue">
+        <strong>Step 3: 调用 LLM</strong>
+        <code>helper.unified_llm_call(messages, model_name, stream=True)</code><br>
+        <span class="llm-tag">LLM 调用</span> 流式输出到 Output 面板
+      </div>
+      <div class="mini-arrow">↓</div>
+      <div class="node node-amber">
+        <strong>Step 4: 风控门处理</strong>
+        <code>action = self.process_llm_output(response)</code><br>
+        <code>OutputParser.parse()</code> → <code>GuardGate.decide()</code> → <code>Action</code> 对象
+      </div>
+      <div class="mini-arrow">↓</div>
+      <div class="node node-green">
+        <strong>Step 5: 路由分支（见下表）</strong>
+      </div>
+    </div>
+
+    <h3>Step 5 路由分支表</h3>
+    <table class="pipeline-table">
+      <thead>
+        <tr>
+          <th>Action 类型</th>
+          <th>触发条件</th>
+          <th>执行动作</th>
+          <th>状态变化</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr style="background: var(--green-bg);">
+          <td><strong><code>trigger_analysis</code></strong></td>
+          <td>LLM 输出含 <code>[TASK_CONFIRMED]</code> 标记<br>
+              <small>（LLM 判断用户确认了任务）</small></td>
+          <td>
+            1. 显示确认消息到聊天框<br>
+            2. 用精炼任务描述更新 <code>self.task</code> + <code>session.set_task()</code><br>
+            3. <code>state = ANALYZING</code><br>
+            4. <strong>直接调用 <code>_run_analysis()</code></strong>（同一 Worker 线程）
+          </td>
+          <td>→ ANALYZING → PLAN_READY</td>
+        </tr>
+        <tr>
+          <td><code>confirm_plan</code></td>
+          <td>LLM 输出含 <code>"steps"</code> + <code>"tool_id"</code> JSON<br>
+              <small>（兼容旧路径，正常不应出现）</small></td>
+          <td>
+            <code>_handle_plan_from_conversation(action)</code><br>
+            提取工具 → 检索 TOML 文档 → 保存到 session → emit plan_ready
+          </td>
+          <td>→ PLAN_READY</td>
+        </tr>
+        <tr>
+          <td><code>show_code</code></td>
+          <td>LLM 输出含 <code>```python</code> 代码块</td>
+          <td>代码 → CodeEditor 面板<br>聊天框显示 "Code generated"</td>
+          <td>状态不变</td>
+        </tr>
+        <tr>
+          <td><code>confirm_knowledge</code></td>
+          <td>知识库关键词 + 建议语气</td>
+          <td>emit <code>knowledge_update_requested</code> → UI 弹窗确认</td>
+          <td>状态不变</td>
+        </tr>
+        <tr>
+          <td><code>show_message</code> (QUESTION)</td>
+          <td>LLM 回复以 ? 结尾或含提问模式</td>
+          <td>消息 → 聊天框，等待用户回答</td>
+          <td>状态不变</td>
+        </tr>
+        <tr>
+          <td><code>show_message</code> (CHAT)</td>
+          <td>以上都不匹配（兜底）</td>
+          <td>消息 → 聊天框</td>
+          <td>状态不变</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>CONVERSATION_SYSTEM_PROMPT 的 4 种模式</h3>
+    <div class="flow-row">
+      <div class="node node-blue">
+        <strong>Mode 1: TASK SUMMARY</strong>
+        信息足够 → 输出自然语言摘要 + 请求确认<br>
+        <small>「我将对 roads.shp 做500米缓冲区分析。确认后开始。」</small>
+      </div>
+      <div class="node node-green">
+        <strong>Mode 2: TASK CONFIRMED</strong>
+        用户确认 → 输出 <code>[TASK_CONFIRMED]</code> + 精炼任务描述<br>
+        <small>「[TASK_CONFIRMED]\n对 roads.shp 做1000米缓冲区分析」</small>
+      </div>
+      <div class="node node-amber">
+        <strong>Mode 3: CLARIFYING QUESTION</strong>
+        信息不足 → 反问用户<br>
+        <small>「缓冲区距离是多少？」</small>
+      </div>
+      <div class="node node-gray">
+        <strong>Mode 4: CONVERSATIONAL REPLY</strong>
+        闲聊/知识问答 → 自然回复<br>
+        <small>「缓冲区分析是一种空间操作...」</small>
+      </div>
+    </div>
+
+    <div class="warning" style="margin-top:0.5rem;">
+      LLM 在对话阶段永远不输出 JSON 执行计划。Plan JSON 由分析流水线的 tool_selection 步骤生成。
+    </div>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 4: OutputParser + GuardGate 风控门
+     ============================================================ -->
+<div class="layer" id="layer4">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第四层：风控门 &mdash; OutputParser + GuardGate
+  </div>
+  <div class="layer-body">
+    <div class="flow-row">
+      <div class="node node-amber">
+        <strong>OutputParser <code>parse(response)</code></strong>
+        regex + 启发式规则判断 LLM 输出类型<br>
+        <strong>不依赖 LLM 自标签</strong>，纯 pattern matching<br>
+        文件：<code>SpatialAnalysisAgent_OutputParser.py</code>
+      </div>
+      <div class="node node-red">
+        <strong>GuardGate <code>decide(parsed)</code></strong>
+        根据 OutputType 返回 Action 对象<br>
+        决定消息去哪：聊天框 / CodeEditor / 触发分析 / 知识库<br>
+        文件：<code>SpatialAnalysisAgent_GuardGate.py</code>
+      </div>
+    </div>
+
+    <h3>检测优先级（高 → 低）</h3>
+    <table class="pipeline-table">
+      <thead>
+        <tr><th>#</th><th>OutputType</th><th>检测规则</th><th>GuardGate Action</th><th>路由目标</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td><span class="llm-tag" style="background:var(--red-border);">CODE</span></td>
+          <td><code>```python</code> 代码块 or 含 <code>import</code>/<code>def</code>/<code>class</code></td>
+          <td><code>show_code</code></td>
+          <td>CodeEditor 面板<br><small>聊天框只显示 "Code generated"</small></td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td><span class="llm-tag" style="background:var(--purple-border);">PLAN</span></td>
+          <td>含 <code>"steps"</code> + <code>"tool_id"</code> 的合法 JSON</td>
+          <td><code>confirm_plan</code></td>
+          <td>兼容旧路径 → PLAN_READY</td>
+        </tr>
+        <tr style="background: var(--green-bg);">
+          <td>3</td>
+          <td><span class="llm-tag" style="background:var(--green-border);">GIS_TASK_READY</span></td>
+          <td>含 <code>[TASK_CONFIRMED]</code> 标记</td>
+          <td><code>trigger_analysis</code></td>
+          <td><strong>触发完整分析流水线</strong><br>
+              提取精炼任务 + 确认消息</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td><span class="llm-tag" style="background:var(--cyan-border);">KNOWLEDGE_UPDATE</span></td>
+          <td>知识库关键词 + 建议语气词</td>
+          <td><code>confirm_knowledge</code></td>
+          <td>弹窗确认 → 写入知识库</td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td><span class="llm-tag" style="background:var(--amber-border);">QUESTION</span></td>
+          <td>以 ?/？ 结尾，或含"请问/请指定/could you"等</td>
+          <td><code>show_message</code></td>
+          <td>聊天框（AI 反问用户）</td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td><span class="llm-tag" style="background:var(--gray-border);">CHAT</span></td>
+          <td>以上都不匹配（兜底）</td>
+          <td><code>show_message</code></td>
+          <td>聊天框（普通对话）</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="node node-green" style="margin-top:0.5rem;">
+      <strong>GIS_TASK_READY 检测细节</strong>
+      <code>_is_task_confirmed(response)</code>：检查 <code>'[TASK_CONFIRMED]' in response</code><br>
+      <code>_extract_confirmed_task(response)</code>：提取标记后面的文本 → 精炼任务描述<br>
+      GuardGate 额外提取标记前的文本 → <code>confirmation_message</code>（显示在聊天框）
+    </div>
+
+    <div class="warning">
+      关键规则：生成的代码永远不显示在聊天框中，只发到 CodeEditor 面板
+    </div>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 5: ANALYZING 分析流水线
+     ============================================================ -->
+<div class="layer" id="layer5">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第五层：ANALYZING 分析流水线 <code>_run_analysis()</code> &mdash; 6 步 + 4 次 LLM 调用
+  </div>
+  <div class="layer-body">
+    <div class="node node-amber" style="margin-bottom:0.5rem;">
+      <strong>触发时机</strong>
+      由 <code>_run_conversation_loop()</code> 检测到 <code>[TASK_CONFIRMED]</code> 后，
+      在同一 Worker 线程中直接调用。此时 <code>self.task</code> 已更新为精炼任务描述。
+    </div>
+
+    <table class="pipeline-table">
+      <thead>
+        <tr>
+          <th>步骤</th><th>名称</th><th>调用模块</th><th>类型</th><th>知识注入</th><th>说明</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td>任务名生成</td>
+          <td><code>helper.generate_task_name_with_model_provider()</code></td>
+          <td><span class="llm-tag">LLM #1</span></td>
+          <td></td>
+          <td>生成简短英文任务名，用于文件命名（如 "buffer_roads"）</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td>数据概览</td>
+          <td><code>helper.add_data_overview_to_data_location()</code></td>
+          <td><span class="no-llm-tag">本地</span></td>
+          <td></td>
+          <td>QgsVectorLayer 读取图层元数据（字段、投影、要素数）<br>
+              <strong>有缓存</strong>：<code>session.has_data_overview()</code> → 跳过</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td>查询调优 (Query Tuning)</td>
+          <td><code>session.build_messages(step="query_tuning")</code></td>
+          <td><span class="llm-tag">LLM #2</span></td>
+          <td><span class="inject-tag">SessionContext</span> <span class="inject-tag">Knowledge</span> <span class="inject-tag">Data Overview</span></td>
+          <td>CoT 分解 GIS 步骤。注入对话历史（含用户参数修改信息）</td>
+        </tr>
+        <tr>
+          <td>3.5</td>
+          <td>Embedding 候选检索</td>
+          <td><code>ToolRetriever.retrieve(task_breakdown, top_k=20)</code></td>
+          <td><span class="no-llm-tag">本地 ONNX</span></td>
+          <td><span class="inject-tag">Whitelist</span></td>
+          <td>ONNX all-MiniLM-L6-v2 嵌入模型，向量相似度检索 top-20 工具<br>
+              + <code>get_whitelist_tool_info()</code> 取白名单工具</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td>结构化执行计划 (Tool Selection)</td>
+          <td><code>session.build_messages(step="tool_selection")</code></td>
+          <td><span class="llm-tag">LLM #3</span></td>
+          <td><span class="inject-tag">SessionContext</span> <span class="inject-tag">Candidates</span> <span class="inject-tag">Data Overview</span></td>
+          <td>从候选工具中选择最佳工具，输出<strong>结构化 JSON Plan</strong><br>
+              此处由 OutputParser + GuardGate 验证 Plan 格式</td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td>TOML 文档检索</td>
+          <td><code>_retrieve_tool_docs(selected_tools)</code></td>
+          <td><span class="no-llm-tag">本地</span></td>
+          <td><span class="inject-tag">TOML Files</span></td>
+          <td>从 <code>Tools_Documentation/</code> 读取每个工具的 TOML 文件<br>
+              含参数说明 + code_example → 注入代码生成步骤</td>
+        </tr>
+        <tr>
+          <td>6</td>
+          <td>GraphML 工作流图</td>
+          <td><code>helper.generate_graph_response()</code></td>
+          <td><span class="llm-tag">LLM #4</span></td>
+          <td><span class="inject-tag">SessionContext</span></td>
+          <td>生成 NetworkX DiGraph → 执行生成 .graphml + pyvis HTML<br>
+              emit <code>graph_ready</code> → Graph Tab 展示</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="gate" style="margin-top:1rem;">
+      <div class="gate-label">门控 1：PLAN_READY — 人工确认点</div>
+      <div style="font-size:0.84rem;margin-top:0.3rem;">
+        流水线自动暂停 → emit <code>plan_ready(analysis_result)</code> →
+        UI 展示方案卡片 + 动态按钮（确认/修改/取消）<br>
+        <strong>用户必须点击「确认执行」才能进入代码执行阶段</strong>
+      </div>
+    </div>
+
+    <h3 style="margin-top:1rem;">Embedding 检索细节 <code>SpatialAnalysisAgent_ToolRetrieval.py</code></h3>
+    <div class="flow-row">
+      <div class="node node-cyan">
+        <strong>ONNXEmbedder（主路径）</strong>
+        model: all-MiniLM-L6-v2 (ONNX 格式, ~80MB)<br>
+        维度: 384 | Mean Pooling + L2 Norm<br>
+        运行时: onnxruntime CPU
+      </div>
+      <div class="node node-gray">
+        <strong>TFIDFEmbedder（回退）</strong>
+        纯 Python 关键词匹配<br>
+        零外部依赖<br>
+        ONNX 不可用时自动降级
+      </div>
+      <div class="node node-cyan">
+        <strong>工具索引</strong>
+        <code>qgis340_tools.json</code>：所有 QGIS 工具元数据<br>
+        <code>TOOL_WHITELIST</code>：50+ 精选常用工具<br>
+        合并白名单 + embedding top-20 去重
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 6: 知识注入系统
+     ============================================================ -->
+<div class="layer" id="layer6">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第六层：知识注入系统（4 大来源 + Token 预算控制）
+  </div>
+  <div class="layer-body">
+    <div class="knowledge-grid">
+      <div class="knowledge-card" style="border-color:var(--cyan-border);background:var(--cyan-bg);color:var(--cyan-text);">
+        <h4>1. SessionContext（会话记忆）</h4>
+        <ul>
+          <li><code>messages[]</code> — 完整对话历史</li>
+          <li><code>data_overview</code> — 图层元数据，缓存跨步骤复用</li>
+          <li><code>current_plan</code> — 覆盖式，只保留最新 Plan</li>
+          <li><code>executed_codes[]</code> — 已执行代码列表</li>
+          <li><code>results[]</code> — 执行结果列表</li>
+        </ul>
+        <div style="margin-top:0.4rem;font-size:0.84rem;">
+          <strong>压缩策略 <code>_get_compressed_history()</code>：</strong><br>
+          保留首条 + 最近 6 条完整 | [Plan] → 删除 | [Code] → "[Code was executed]" | 普通 &gt;200字 → 截断
+        </div>
+      </div>
+      <div class="knowledge-card" style="border-color:var(--cyan-border);background:var(--cyan-bg);color:var(--cyan-text);">
+        <h4>2. Project Knowledge（用户文档）</h4>
+        <ul>
+          <li>格式：PDF (PyMuPDF), DOCX, XLSX, CSV, TXT, JSON, TOML</li>
+          <li><code>KnowledgeManager.get_relevant_knowledge()</code></li>
+          <li>关键词评分（vs 图层名 + 当前 query）</li>
+          <li>最大 6000 字符注入</li>
+        </ul>
+        <div style="margin-top:0.4rem;font-size:0.84rem;">
+          注入到 system message 静态部分 → 可命中 prompt cache<br>
+          文件：<code>SpatialAnalysisAgent_KnowledgeManager.py</code>
+        </div>
+      </div>
+      <div class="knowledge-card" style="border-color:var(--cyan-border);background:var(--cyan-bg);color:var(--cyan-text);">
+        <h4>3. TOML 工具文档</h4>
+        <ul>
+          <li>位置：<code>Tools_Documentation/QGIS_Tools/*.toml</code></li>
+          <li>内容：tool_ID、参数说明、code_example</li>
+          <li>600+ 文件，按步骤 4 工具选择结果精准检索</li>
+        </ul>
+        <div style="margin-top:0.4rem;font-size:0.84rem;">
+          注入到代码生成 / 代码审查步骤<br>
+          文件：<code>SpatialAnalysisAgent_ToolsDocumentation.py</code>
+        </div>
+      </div>
+      <div class="knowledge-card" style="border-color:var(--cyan-border);background:var(--cyan-bg);color:var(--cyan-text);">
+        <h4>4. QGIS 算法索引</h4>
+        <ul>
+          <li><code>Codebase.algorithm_names</code> — 全部 QGIS 工具名称</li>
+          <li><code>Codebase.algorithms_dict</code> — 名称 → ID 映射</li>
+          <li><code>Constants.CustomTools_dict</code> — 自定义工具</li>
+        </ul>
+        <div style="margin-top:0.4rem;font-size:0.84rem;">
+          用于步骤 5 TOML 文件查找时的 ID 映射<br>
+          文件：<code>SpatialAnalysisAgent_Codebase.py</code>
+        </div>
+      </div>
+    </div>
+
+    <h3 style="margin-top:1rem;"><code>build_messages()</code> 组装策略 &amp; Token 预算</h3>
+    <div class="flow-row">
+      <div class="node node-cyan">
+        <strong>静态部分（可命中 prompt cache）</strong>
+        Step role / <code>CONVERSATION_SYSTEM_PROMPT</code><br>
+        通用 GIS/QGIS 编码规则<br>
+        项目知识库相关条目<br>
+        <small>预算：8000 字符 (~2K tokens)</small>
+      </div>
+      <div class="node node-amber">
+        <strong>分隔符 <code>---CONTEXT---</code></strong>
+      </div>
+      <div class="node node-blue">
+        <strong>动态部分</strong>
+        数据概览（始终包含）<br>
+        当前 plan（code_generation/debug/conversation）<br>
+        最近执行结果（最多 3 条）<br>
+        <small>预算：8000 字符 (~2K tokens)</small>
+      </div>
+      <div class="node node-gray">
+        <strong>压缩历史 + 当前指令</strong>
+        首条 + 最近 6 条 + 当前 step_instruction<br>
+        <small>预算：8000 字符 (~2K tokens)</small>
+      </div>
+    </div>
+    <div class="node node-gray" style="margin-top:0.5rem;">
+      <strong>总预算</strong> MAX_CONTEXT_CHARS = 24000 字符 (~6K tokens)
+    </div>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 7: EXECUTING 代码执行阶段
+     ============================================================ -->
+<div class="layer" id="layer7">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第七层：EXECUTING 代码执行阶段 <code>_run_execution()</code>
+  </div>
+  <div class="layer-body">
+    <div class="node node-purple" style="margin-bottom:0.5rem;">
+      <strong>触发时机</strong>
+      <span class="human-tag">仅当用户点击「确认执行」</span> 时触发。
+      <code>_handle_confirm_plan()</code> → <code>_start_worker(_run_execution)</code>
+    </div>
+
+    <table class="pipeline-table">
+      <thead>
+        <tr><th>步骤</th><th>名称</th><th>调用模块</th><th>类型</th><th>说明</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>7a</td>
+          <td>代码生成</td>
+          <td><code>session.build_messages(step="code_generation")</code></td>
+          <td><span class="llm-tag">LLM #5</span></td>
+          <td>注入 TOML 文档 + current_plan + 数据概览<br>
+              OutputParser 提取 <code>```python</code> 代码块</td>
+        </tr>
+        <tr>
+          <td>7b</td>
+          <td>代码审查（可选）</td>
+          <td><code>session.build_messages(step="code_review")</code></td>
+          <td><span class="llm-tag">LLM #6</span></td>
+          <td>可在 Settings 关闭 <code>is_review</code><br>
+              对比 TOML 文档验证参数设置</td>
+        </tr>
+        <tr>
+          <td>7c</td>
+          <td>代码执行</td>
+          <td><code>helper.execute_complete_program()</code></td>
+          <td><span class="no-llm-tag">exec()</span></td>
+          <td><code>exec(compiled_code, globals)</code> 在 QGIS Python 环境中<br>
+              emit <code>code_ready</code> → CodeEditor 面板</td>
+        </tr>
+        <tr>
+          <td>7d</td>
+          <td>错误 → 自动调试</td>
+          <td><code>SmartDebugger</code> + <code>session.build_messages(step="debug")</code></td>
+          <td><span class="llm-tag">LLM Debug</span></td>
+          <td>最多 5 次重试循环（见下图）</td>
+        </tr>
+        <tr>
+          <td>7e</td>
+          <td>成功 → 结果存入</td>
+          <td><code>session.add_result()</code></td>
+          <td></td>
+          <td>emit <code>result_ready</code> → RESULT_READY</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="debug-loop">
+      <h3>SmartDebugger 自动调试循环</h3>
+      <div class="flow-vertical" style="max-width:700px;margin:0.5rem auto;">
+        <div class="node node-red">
+          <strong>执行代码 <code>exec(compiled_code)</code></strong>
+        </div>
+        <div class="mini-arrow">↓ 出错?</div>
+        <div class="node node-amber">
+          <strong>收集错误信息</strong>
+          traceback + error_type + SmartDebugger 模式分析<br>
+          <code>debugger_instance.generate_debug_suggestions(error_msg, code, operation_type)</code><br>
+          <small>识别 8 大错误模式：Import/QGIS/Path/Algorithm/Geometry/Field/Memory/CRS</small>
+        </div>
+        <div class="mini-arrow">↓</div>
+        <div class="node node-blue">
+          <strong>发给 LLM 修复 <span class="llm-tag">LLM Debug</span></strong>
+          <code>session.build_messages(step="debug")</code><br>
+          注入：原代码 + 错误信息 + SmartDebugger 建议 + TOML 文档<br>
+          <code>get_smart_debug_requirements()</code> 动态生成调试要求
+        </div>
+        <div class="mini-arrow">↓</div>
+        <div class="node node-red">
+          <strong>提取修复后代码 → 重新执行</strong>
+          OutputParser 提取 <code>```python</code> 块 → 再次 exec()
+        </div>
+        <div class="mini-arrow">↺ 循环直至成功或达 5 次</div>
+      </div>
+    </div>
+
+    <div class="gate" style="margin-top:1rem;">
+      <div class="gate-label">门控 2：RESULT_READY — 人工确认点</div>
+      <div style="font-size:0.84rem;margin-top:0.3rem;">
+        执行完成后自动暂停 → emit <code>result_ready(info)</code> →
+        UI 展示结果 + 动态按钮（追问/微调/报错/完成）
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 8: LLM 调用通道
+     ============================================================ -->
+<div class="layer" id="layer8">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第八层：LLM 调用通道 &mdash; <code>unified_llm_call()</code> + ModelProvider
+  </div>
+  <div class="layer-body">
+    <h3>API Key 自动检测 <code>detect_provider()</code></h3>
+    <div style="margin:0.5rem 0;">
+      <div class="api-rule"><span class="api-prefix">sk-ant-...</span><span>→ Anthropic (Claude)</span></div>
+      <div class="api-rule"><span class="api-prefix">sk-...</span> <small>(非 ant)</small><span>→ OpenAI / DeepSeek（自动探测）</span></div>
+      <div class="api-rule"><span class="api-prefix">gibd-services-...</span><span>→ GIBD 代理 (<code>gibd.online/api/openai/</code>)</span></div>
+      <div class="api-rule"><span class="api-prefix">eyJ...</span> <small>(JWT)</small><span>→ MiniMax</span></div>
+      <div class="api-rule"><span class="api-prefix">AIza...</span><span>→ Google Gemini</span></div>
+      <div class="api-rule"><span class="api-prefix">其他</span><span>→ Ollama 本地模型 / 手动配置</span></div>
+    </div>
+
+    <h3>Provider 路由</h3>
+    <div class="flow-row">
+      <div class="node node-blue">
+        <strong>OpenAI</strong>
+        gpt-4o, gpt-4o-mini, o1, o3-mini
+      </div>
+      <div class="node node-blue">
+        <strong>GPT-5</strong>
+        gpt-5, gpt-5.1, gpt-5.2<br>
+        <small>支持 reasoning_effort</small>
+      </div>
+      <div class="node node-blue">
+        <strong>DeepSeek</strong>
+        deepseek-chat, deepseek-reasoner
+      </div>
+      <div class="node node-blue">
+        <strong>Anthropic</strong>
+        claude-sonnet, claude-haiku
+      </div>
+      <div class="node node-blue">
+        <strong>Gemini</strong>
+        gemini-2.5-pro/flash
+      </div>
+      <div class="node node-gray">
+        <strong>Ollama</strong>
+        llama3.1:70b, qwen3:32b...<br>
+        <small>本地/远程</small>
+      </div>
+    </div>
+
+    <h3 style="margin-top:0.75rem;">LLM 调用统计（完整一次任务）</h3>
+    <table class="pipeline-table">
+      <thead><tr><th>调用</th><th>阶段</th><th>角色</th><th>Streaming</th></tr></thead>
+      <tbody>
+        <tr><td>#1</td><td>对话循环（可能多轮）</td><td>CONVERSATION_SYSTEM_PROMPT</td><td>Yes</td></tr>
+        <tr><td>#2</td><td>分析：任务名生成</td><td>简单指令</td><td>No</td></tr>
+        <tr><td>#3</td><td>分析：Query Tuning</td><td>Query_tuning_role</td><td>Yes</td></tr>
+        <tr><td>#4</td><td>分析：Tool Selection</td><td>ToolSelect_role</td><td>Yes</td></tr>
+        <tr><td>#5</td><td>分析：GraphML 生成</td><td>graph_role</td><td>Yes</td></tr>
+        <tr><td>#6</td><td>执行：代码生成</td><td>operation_role</td><td>Yes</td></tr>
+        <tr><td>#7</td><td>执行：代码审查（可选）</td><td>code_review_role</td><td>Yes</td></tr>
+        <tr><td>#8-12</td><td>执行：自动调试（0-5次）</td><td>debug_role + SmartDebugger</td><td>Yes</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 9: 线程模型 + Qt 信号
+     ============================================================ -->
+<div class="layer" id="layer9">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第九层：线程模型 + Qt 信号系统
+  </div>
+  <div class="layer-body">
+    <div class="thread-cols">
+      <div class="thread-box" style="border-color:var(--blue-border);background:var(--blue-bg);color:var(--blue-text);">
+        <h3>主线程（GUI — 永不阻塞）</h3>
+        <ul style="padding-left:1.2rem;font-size:0.84rem;margin-top:0.5rem;">
+          <li><code>SpatialAnalysisAgentDockWidget</code>
+            <ul>
+              <li>Chat 面板 <code>chatgpt_ans_textBrowser</code></li>
+              <li>CodeEditor 面板（语法高亮）</li>
+              <li>Output 面板 <code>execution_output_text_edit</code></li>
+              <li>Graph WebView <code>QWebView</code></li>
+              <li>Knowledge Tab（笔记 + 文档上传）</li>
+            </ul>
+          </li>
+          <li>动态按钮组 <code>_setup_action_buttons()</code></li>
+          <li>Settings 面板（API Key + Model + Review 开关）</li>
+          <li>图层监听器 <code>layerWasAdded / layerWillBeRemoved</code></li>
+        </ul>
+      </div>
+      <div class="thread-box" style="border-color:var(--amber-border);background:var(--amber-bg);color:var(--amber-text);">
+        <h3>Worker QThread（阻塞操作）</h3>
+        <ul style="padding-left:1.2rem;font-size:0.84rem;margin-top:0.5rem;">
+          <li><code>AgentWorkerThread</code> — 运行 AgentController 方法
+            <ul>
+              <li><code>_run_conversation_loop()</code> — 对话循环</li>
+              <li><code>_run_analysis()</code> — 分析流水线</li>
+              <li><code>_run_execution()</code> — 代码执行</li>
+              <li><code>_run_plan_revision()</code> — 方案微调</li>
+            </ul>
+          </li>
+          <li><code>ProviderDetectionWorker</code> — API Key 检测</li>
+          <li><code>LibraryCheckThread</code> — 依赖检查</li>
+          <li><code>InstallLibrariesThread</code> — 依赖安装</li>
+          <li><code>_ThreadStreamRedirector</code> — stdout 缓冲 (只在 <code>\n</code> 时 emit)</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3 style="margin-top:1rem;">关键 Qt 信号（全部 <code>Qt.QueuedConnection</code>）</h3>
+    <ul class="signal-list">
+      <li><span class="signal-name">state_changed(str)</span> → <code>_on_state_changed()</code> → 切换按钮组 + 状态指示</li>
+      <li><span class="signal-name">chat_response(str)</span> → 聊天面板显示 AI 回复</li>
+      <li><span class="signal-name">status_update(str)</span> → 聊天面板状态消息（如 "正在分析..."）</li>
+      <li><span class="signal-name">plan_ready(dict)</span> → 显示方案卡片 + Graph Tab + 按钮组</li>
+      <li><span class="signal-name">result_ready(dict)</span> → 显示执行结果 + 按钮组</li>
+      <li><span class="signal-name">code_ready(str)</span> → 更新 CodeEditor 面板</li>
+      <li><span class="signal-name">graph_ready(str)</span> → 加载 pyvis HTML → QWebView</li>
+      <li><span class="signal-name">execution_output(str)</span> → Output 面板逐行显示</li>
+      <li><span class="signal-name">data_overview_ready(str)</span> → 数据概览展示</li>
+      <li><span class="signal-name">task_breakdown_ready(str)</span> → 任务分解展示</li>
+      <li><span class="signal-name">tools_selected(str)</span> → 工具选择结果展示</li>
+      <li><span class="signal-name">knowledge_update_requested(str)</span> → UI 弹窗确认写入知识库</li>
+      <li><span class="signal-name">error_occurred(str)</span> → 聊天面板显示错误</li>
+      <li><span class="signal-name">task_finished(bool)</span> → 任务完成通知</li>
+    </ul>
+
+    <div class="warning">
+      线程纪律：所有 GUI 操作必须在主线程 | Worker 中禁止调用 repaint() |
+      <code>sys.path.insert</code> 确保无前缀 import |
+      所有信号连接使用 <code>Qt.QueuedConnection</code>
+    </div>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 10: 文件模块清单
+     ============================================================ -->
+<div class="layer" id="layer10">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第十层：文件模块清单（14 个核心文件）
+  </div>
+  <div class="layer-body">
+    <table class="pipeline-table">
+      <thead>
+        <tr><th>文件</th><th>职责</th><th>关键类/函数</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>AgentController.py</code></td>
+          <td>状态机核心 + 阶段函数</td>
+          <td><code>AgentController</code>, <code>AgentState</code>, <code>UserAction</code>, <code>AgentWorkerThread</code></td>
+        </tr>
+        <tr>
+          <td><code>SessionContext.py</code></td>
+          <td>统一上下文管理</td>
+          <td><code>SessionContext.build_messages()</code>, <code>_get_compressed_history()</code></td>
+        </tr>
+        <tr>
+          <td><code>OutputParser.py</code></td>
+          <td>LLM 输出类型检测</td>
+          <td><code>AgentOutputParser.parse()</code>, <code>OutputType</code>, <code>ParsedOutput</code></td>
+        </tr>
+        <tr>
+          <td><code>GuardGate.py</code></td>
+          <td>风控决策路由</td>
+          <td><code>GuardGate.decide()</code>, <code>GuardGate.Action</code></td>
+        </tr>
+        <tr>
+          <td><code>Constants.py</code></td>
+          <td>所有 System Prompt + 常量</td>
+          <td><code>CONVERSATION_SYSTEM_PROMPT</code>, <code>TOOL_WHITELIST</code>, 各步骤 prompt</td>
+        </tr>
+        <tr>
+          <td><code>helper.py</code></td>
+          <td>LLM 调用 + 执行编排</td>
+          <td><code>unified_llm_call()</code>, <code>execute_complete_program()</code>, prompt builders</td>
+        </tr>
+        <tr>
+          <td><code>ModelProvider.py</code></td>
+          <td>多 Provider 抽象</td>
+          <td><code>create_unified_client()</code>, <code>detect_provider()</code></td>
+        </tr>
+        <tr>
+          <td><code>ToolRetrieval.py</code></td>
+          <td>Embedding 工具检索</td>
+          <td><code>ToolRetriever</code>, <code>ONNXEmbedder</code>, <code>TFIDFEmbedder</code></td>
+        </tr>
+        <tr>
+          <td><code>ToolsDocumentation.py</code></td>
+          <td>TOML 文档加载</td>
+          <td><code>tool_documentation_collection()</code>, <code>fix_toml_file()</code></td>
+        </tr>
+        <tr>
+          <td><code>KnowledgeManager.py</code></td>
+          <td>项目知识存储</td>
+          <td><code>get_relevant_knowledge()</code>, <code>add_document()</code></td>
+        </tr>
+        <tr>
+          <td><code>KnowledgeUI.py</code></td>
+          <td>知识 Tab UI</td>
+          <td>笔记编辑器（2s debounce 自动保存）+ 文档列表</td>
+        </tr>
+        <tr>
+          <td><code>SmartDebugger.py</code></td>
+          <td>错误模式识别</td>
+          <td><code>SmartDebugger.generate_debug_suggestions()</code></td>
+        </tr>
+        <tr>
+          <td><code>Codebase.py</code></td>
+          <td>QGIS 算法索引</td>
+          <td><code>index_tools()</code>, <code>algorithm_names</code>, <code>algorithms_dict</code></td>
+        </tr>
+        <tr>
+          <td><code>dockwidget.py</code></td>
+          <td>主 UI（3900+ 行）</td>
+          <td>多 Tab 界面, 图层监听, 动态按钮, 信号连接</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="connector"><svg viewBox="0 0 40 40"><path d="M20 5 L20 28"/><polygon points="14,25 20,35 26,25"/></svg></div>
+
+<!-- ============================================================
+     LAYER 11: 完整交互示例
+     ============================================================ -->
+<div class="layer" id="layer11">
+  <div class="layer-title" onclick="toggleLayer(this)">
+    <span class="toggle">&#9660;</span>
+    第十一层：完整交互示例（从模糊输入到代码执行）
+  </div>
+  <div class="layer-body">
+    <table class="pipeline-table">
+      <thead>
+        <tr><th>#</th><th>角色</th><th>内容</th><th>OutputParser</th><th>状态</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>1</td>
+          <td style="color:var(--purple-text);font-weight:700;">User</td>
+          <td>"帮我做缓冲区分析"</td>
+          <td>—</td>
+          <td>IDLE → 对话循环</td>
+        </tr>
+        <tr>
+          <td>2</td>
+          <td style="color:var(--blue-text);font-weight:700;">LLM</td>
+          <td>"缓冲区距离是多少？对哪个图层操作？"</td>
+          <td><span class="llm-tag" style="background:var(--amber-border);">QUESTION</span></td>
+          <td>→ 聊天框，等用户</td>
+        </tr>
+        <tr>
+          <td>3</td>
+          <td style="color:var(--purple-text);font-weight:700;">User</td>
+          <td>"roads.shp，500米"</td>
+          <td>—</td>
+          <td>→ 对话循环</td>
+        </tr>
+        <tr>
+          <td>4</td>
+          <td style="color:var(--blue-text);font-weight:700;">LLM</td>
+          <td>"好的，我将对 roads.shp 做500米缓冲区分析。确认后开始。"</td>
+          <td><span class="llm-tag" style="background:var(--gray-border);">CHAT</span></td>
+          <td>→ 聊天框（摘要请确认）</td>
+        </tr>
+        <tr>
+          <td>5</td>
+          <td style="color:var(--purple-text);font-weight:700;">User</td>
+          <td>"嗯但是改成1000米"</td>
+          <td>—</td>
+          <td>→ 对话循环</td>
+        </tr>
+        <tr style="background: var(--green-bg);">
+          <td>6</td>
+          <td style="color:var(--blue-text);font-weight:700;">LLM</td>
+          <td>"[TASK_CONFIRMED]\n对 roads.shp 做1000米缓冲区分析"</td>
+          <td><span class="llm-tag" style="background:var(--green-border);">GIS_TASK_READY</span></td>
+          <td>→ <strong>trigger_analysis</strong><br>→ ANALYZING</td>
+        </tr>
+        <tr>
+          <td>7</td>
+          <td style="color:var(--cyan-text);font-weight:700;">System</td>
+          <td>_run_analysis() 执行 6 步流水线...<br>
+              embedding 检索 → LLM 工具选择 → TOML 文档 → GraphML</td>
+          <td>—</td>
+          <td>ANALYZING</td>
+        </tr>
+        <tr>
+          <td>8</td>
+          <td style="color:var(--cyan-text);font-weight:700;">System</td>
+          <td>方案卡片展示：Buffer roads.shp 1000m, tool: native:buffer</td>
+          <td>—</td>
+          <td>→ <span class="human-tag">PLAN_READY</span></td>
+        </tr>
+        <tr>
+          <td>9</td>
+          <td style="color:var(--purple-text);font-weight:700;">User</td>
+          <td><span class="btn-badge btn-purple">确认执行</span></td>
+          <td>—</td>
+          <td>→ EXECUTING</td>
+        </tr>
+        <tr>
+          <td>10</td>
+          <td style="color:var(--cyan-text);font-weight:700;">System</td>
+          <td>代码生成 → 审查 → exec() → 成功</td>
+          <td>—</td>
+          <td>→ <span class="human-tag">RESULT_READY</span></td>
+        </tr>
+        <tr>
+          <td>11</td>
+          <td style="color:var(--purple-text);font-weight:700;">User</td>
+          <td><span class="btn-badge btn-gray">完成</span></td>
+          <td>—</td>
+          <td>→ IDLE</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="node node-amber" style="margin-top:0.5rem;">
+      <strong>关键观察</strong>
+      第 5 步用户说"嗯但是改成1000米" — LLM 理解这是<strong>确认+修改参数</strong>，
+      输出 <code>[TASK_CONFIRMED]</code> 并将参数更新为 1000m。这个判断由 LLM 做，不是硬规则匹配用户输入。
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Footer
+     ============================================================ -->
+<div style="text-align:center;margin-top:2rem;padding:1rem;color:var(--text-muted);font-size:0.84rem;">
+  SpatialAnalysisAgent Architecture Diagram v2 &nbsp;|&nbsp;
+  Phase 5: 对话循环 + [TASK_CONFIRMED] 触发 + 分析流水线 &nbsp;|&nbsp;
+  14 核心模块 &nbsp;|&nbsp; 6 状态 &nbsp;|&nbsp; 2 人工门控 &nbsp;|&nbsp; 6-12 次 LLM 调用/任务
+</div>
+
+<!-- ============================================================
+     JavaScript: Toggle Layers
+     ============================================================ -->
+<script>
+function toggleLayer(titleEl) {
+  const body = titleEl.nextElementSibling;
+  const toggle = titleEl.querySelector('.toggle');
+  if (body.classList.contains('collapsed')) {
+    body.classList.remove('collapsed');
+    body.style.maxHeight = body.scrollHeight + 'px';
+    toggle.classList.remove('collapsed');
+  } else {
+    body.style.maxHeight = body.scrollHeight + 'px';
+    body.offsetHeight;
+    body.style.maxHeight = '0';
+    body.classList.add('collapsed');
+    toggle.classList.add('collapsed');
+  }
+}
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.layer-body').forEach(body => {
+    body.style.maxHeight = body.scrollHeight + 'px';
+  });
+  window.addEventListener('resize', () => {
+    document.querySelectorAll('.layer-body:not(.collapsed)').forEach(body => {
+      body.style.maxHeight = 'none';
+      body.style.maxHeight = body.scrollHeight + 'px';
+    });
+  });
+});
+</script>
+</body>
+</html>

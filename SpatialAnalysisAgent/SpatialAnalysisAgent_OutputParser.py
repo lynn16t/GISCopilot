@@ -24,6 +24,7 @@ class OutputType(Enum):
     """LLM 输出的类型。"""
     CODE = "code"
     PLAN = "plan"
+    GIS_TASK_READY = "gis_task_ready"
     QUESTION = "question"
     KNOWLEDGE_UPDATE = "knowledge_update"
     CHAT = "chat"
@@ -40,6 +41,7 @@ class ParsedOutput:
             content: 根据类型不同的结构化内容：
                 CODE → 提取出的 python 代码字符串
                 PLAN → 解析出的 dict (structured plan)
+                GIS_TASK_READY → 精炼的任务描述字符串
                 QUESTION → 原始文本
                 KNOWLEDGE_UPDATE → 建议写入的知识条目文本
                 CHAT → 原始文本
@@ -62,15 +64,16 @@ class AgentOutputParser:
         判断优先级（从高到低）：
           1. CODE：包含 ```python 代码块
           2. PLAN：包含 "steps" + "tool_id" 的 JSON 结构
-          3. KNOWLEDGE_UPDATE：包含知识库相关关键词 + 建议语气
-          4. QUESTION：以问号结尾 或 包含明确提问模式
-          5. CHAT：以上都不是，视为普通聊天
+          3. GIS_TASK_READY：包含 [TASK_CONFIRMED] 标记
+          4. KNOWLEDGE_UPDATE：包含知识库相关关键词 + 建议语气
+          5. QUESTION：以问号结尾 或 包含明确提问模式
+          6. CHAT：以上都不是，视为普通聊天
 
         优先级的设计依据：
           - CODE 最高优先级：因为代码块内可能包含 JSON 或问号，
             但整体意图是执行代码
-          - PLAN 高于 KNOWLEDGE_UPDATE：因为 plan 的 JSON 结构
-            特征非常明确（"steps" + "tool_id"），不会误判
+          - PLAN 高于 GIS_TASK_READY：保留兼容旧 plan JSON 格式
+          - GIS_TASK_READY 高于 KNOWLEDGE_UPDATE：任务确认应优先处理
           - QUESTION 低于 KNOWLEDGE_UPDATE：因为 knowledge_update
             也可能带问号（"要不要加到知识库？"），但应该走知识库流程
           - CHAT 是兜底
@@ -92,16 +95,21 @@ class AgentOutputParser:
         if plan is not None:
             return ParsedOutput(OutputType.PLAN, response, content=plan)
 
-        # --- 3. KNOWLEDGE_UPDATE 检测 ---
+        # --- 3. GIS_TASK_READY 检测 ---
+        if self._is_task_confirmed(response):
+            refined_task = self._extract_confirmed_task(response)
+            return ParsedOutput(OutputType.GIS_TASK_READY, response, content=refined_task)
+
+        # --- 4. KNOWLEDGE_UPDATE 检测 ---
         if self._is_knowledge_update(response):
             knowledge_text = self._extract_knowledge_suggestion(response)
             return ParsedOutput(OutputType.KNOWLEDGE_UPDATE, response, content=knowledge_text)
 
-        # --- 4. QUESTION 检测 ---
+        # --- 5. QUESTION 检测 ---
         if self._is_question(response):
             return ParsedOutput(OutputType.QUESTION, response, content=response)
 
-        # --- 5. 兜底：CHAT ---
+        # --- 6. 兜底：CHAT ---
         return ParsedOutput(OutputType.CHAT, response, content=response)
 
     # ------------------------------------------------------------------
@@ -202,6 +210,24 @@ class AgentOutputParser:
             pass
 
         return None
+
+    # ------------------------------------------------------------------
+    # GIS_TASK_READY 检测
+    # ------------------------------------------------------------------
+
+    def _is_task_confirmed(self, response: str) -> bool:
+        """检测 LLM 回复中是否包含 [TASK_CONFIRMED] 标记。"""
+        return '[TASK_CONFIRMED]' in response
+
+    def _extract_confirmed_task(self, response: str) -> str:
+        """
+        提取 [TASK_CONFIRMED] 标记后面的精炼任务描述。
+
+        Returns:
+            精炼的任务描述字符串
+        """
+        idx = response.index('[TASK_CONFIRMED]')
+        return response[idx + len('[TASK_CONFIRMED]'):].strip()
 
     # ------------------------------------------------------------------
     # KNOWLEDGE_UPDATE 检测

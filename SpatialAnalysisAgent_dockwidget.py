@@ -22,6 +22,7 @@
  ***************************************************************************/
 """
 import base64
+import io
 import sys, os
 _sa_dir = os.path.join(os.path.dirname(__file__), 'SpatialAnalysisAgent')
 if _sa_dir not in sys.path:
@@ -3081,8 +3082,9 @@ class ScriptThread(QThread):
         self.session = None
 
     def run(self):
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
+        # Snapshot originals; guard against None (pythonw.exe / QGIS with no console)
+        original_stdout = sys.stdout if sys.stdout is not None else io.StringIO()
+        original_stderr = sys.stderr if sys.stderr is not None else io.StringIO()
 
         try:
             # Ensure that the updated configuration is read by reloading the config
@@ -3563,9 +3565,9 @@ class RunGeneratedCodeThread(QThread):
 
     def run(self):
         self.success = True
-        # Redirect stdout and stderr
-        original_stdout = sys.stdout
-        original_stderr = sys.stderr
+        # Redirect stdout and stderr; guard against None originals
+        original_stdout = sys.stdout if sys.stdout is not None else io.StringIO()
+        original_stderr = sys.stderr if sys.stderr is not None else io.StringIO()
         sys.stdout = StreamRedirector()
         sys.stderr = StreamRedirector()
 

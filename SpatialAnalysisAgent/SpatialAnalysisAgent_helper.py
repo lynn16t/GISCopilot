@@ -10,9 +10,14 @@ import requests
 import warnings
 from openai import OpenAI
 from SpatialAnalysisAgent_ModelProvider import create_unified_client, ModelProviderFactory
-# Fix sys.stderr being None during QGIS initialization (prevents NumPy AttributeError)
+# Fix sys.stderr/sys.stdout being None during QGIS initialization
+# (prevents NumPy/GDAL AttributeError: 'NoneType' object has no attribute 'write').
+# Note: assigning stderr = stdout is unsafe when stdout itself is None,
+# so we always fall back to an in-memory stream.
+if sys.stdout is None:
+    sys.stdout = io.StringIO()
 if sys.stderr is None:
-    sys.stderr = sys.stdout
+    sys.stderr = io.StringIO()
 
 import networkx as nx
 from pyvis.network import Network
@@ -2686,62 +2691,13 @@ def extract_tool_ids_from_plan(plan: dict) -> list:
     return [step["tool_id"] for step in plan.get("steps", [])]
 
 
-def unified_llm_call(
-    request_id: str,
-    messages: list,
-    model_name: str,
-    stream: bool = True,
-    reasoning_effort: str = "medium"
-) -> str:
-    """
-    统一的 LLM 调用接口，用于 Phase 3 新模式
-    替代旧的 Query_tuning, tool_select, operation 等函数
-
-    Args:
-        request_id: 请求 ID
-        messages: 完整的 messages 列表（由 SessionContext.build_messages() 生成）
-        model_name: 模型名称
-        stream: 是否流式输出
-        reasoning_effort: 推理effort级别
-
-    Returns:
-        LLM 的完整响应文本
-    """
-    from SpatialAnalysisAgent_ModelProvider import create_unified_client
-
-    client, provider = create_unified_client(model_name)
-
-    kwargs = {}
-    if reasoning_effort and provider in ["deepseek", "openai"]:
-        if model_name in ["deepseek-reasoner", "o1", "o1-mini", "o3-mini"]:
-            kwargs["reasoning_effort"] = reasoning_effort
-
-    try:
-        if stream:
-            response_stream = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                stream=True,
-                **kwargs
-            )
-
-            full_response = ""
-            for chunk in response_stream:
-                if chunk.choices and chunk.choices[0].delta.content:
-                    content = chunk.choices[0].delta.content
-                    print(content, end="", flush=True)
-                    full_response += content
-
-            return full_response
-        else:
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,
-                **kwargs
-            )
-            return response.choices[0].message.content
-
-    except Exception as e:
-        print(f"\n[Error] unified_llm_call failed: {e}")
-        raise
+# NOTE: A second `unified_llm_call` definition used to live here as part of a
+# half-finished Phase 3 refactor. Its signature was
+#     (request_id, messages, model_name, stream=True, reasoning_effort="medium")
+# which silently overrode the feature-complete version at line ~1111 and broke
+# every call site that passes `temperature=...` (the error shown in the chat
+# window was: "unified_llm_call() got an unexpected keyword argument
+# 'temperature'"). It also bypassed provider.generate_completion(), losing
+# GIBD-proxy / GPT-5 / Ollama / non-standard streaming support. Removed — the
+# original `unified_llm_call` above already covers the Phase 3 use cases.
 
