@@ -103,6 +103,19 @@ Mode 4: CONVERSATIONAL REPLY — For questions, greetings, concept explanations,
    or any input that does not require GIS analysis execution.
    Reply naturally in the same language the user is using.
 
+Mode 5: KNOWLEDGE UPDATE — When you discover a reusable rule, convention, or
+   data-specific insight during the conversation that would help future tasks
+   (e.g., "field X actually means Y", "this dataset uses EPSG:2436",
+   "user prefers output in GeoPackage format"), suggest saving it to the
+   project knowledge base.
+   Output the tag [KNOWLEDGE_UPDATE] on its own line, followed by the
+   knowledge entry to save. Keep entries concise and factual.
+   Example:
+     "[KNOWLEDGE_UPDATE]
+      roads.shp 的 DLMC 字段为道路等级编码，值域: 1=高速, 2=国道, 3=省道, 4=县道"
+   Only suggest this when the information is genuinely reusable — do NOT
+   suggest saving trivial or one-off information.
+
 === IMPORTANT RULES ===
 
 - NEVER output JSON execution plans (no "steps", no "tool_id").
@@ -213,7 +226,6 @@ INSTRUCTIONS:
 - Choose the **best-fit tool** based on the GIS Operation description.
 - "NOTE: You are not limited to QGIS tools only, you can also make use of python libraries".
 - There may be some operations that require multiple steps and multiple tools. In that case recommend the tools for each operation.
-- When creating charts or plots such as barchart, barplot, scatterplot etc., you should make use of `seaborn` by default except another method is specified.
 - "You are not limited to QGIS python functions, you can also use other python functions such as geopandas, numpy, scipy etc.",
 - "NOTE:  Algorithm `native:rastercalculator` is not the correct ID for Raster Calculator, the correct ID is `native:rastercalc`",
 - f"If a task directly mention creation of thematic map. NOTE: Thematic map creation is to be used. DO NOT select any existing QGIS tool for thematic map creation, rather select from the 'Customized tools' provided. E.g, do not select 'categorized renderer from styles'",
@@ -255,7 +267,6 @@ OperationIdentification_requirements = [
     "DO NOT provide Additional details of any tool",
     f"DO NOT make fake tool. If you cannot find any suitable qgis tool, return any tool name that you think is most appropriate based on the descriptions of tools listed in the 'Customized tool' ptovided and if you cannot find other tools, provide any other tools that is suitable",#select from the return 'Unknown' as for the 'Selected tool' key in the reply JSON format. DO NOT use ```json and ```",
     f"If a task directly mention creation of thematic map. NOTE: Thematic map creation is to be used. DO NOT select any existing QGIS tool for thematic map creation, rather select from the 'Customized tools' provided. E.g, do not select 'categorized renderer from styles'",
-    "If creating charts or plots such as barchart, barplot, scatterplot etc., you should make use of `seaborn` by default except another method is specified",
     f"If a task involve the use of kernel density map estimation, DO NOT select any existing QGIS tool for density map creation, rather select Density map (Kernel Density Estimation) listed in the 'Customized tools' provided",
     "When using `gdal:proximity`, ensure all shapefiles are rasterized before using them",
     # f"if a task involve the use of Inverse Distance Weighted (IDW) interpolation, DO NOT select any existing QGIS tool, rather select from other tools contained in the 'Customized tools' provided."
@@ -290,7 +301,6 @@ ToolSelect_requirements = [
                         # f"if a task involve the use of Inverse Distance Weighted (IDW) interpolation, DO NOT select any existing QGIS tool, rather select from other tools contained in the 'Customized tools' provided",#the Other tools ({tools_list})"
                         f"If a task directly mention creation of thematic map. NOTE: Thematic map creation is to be used. DO NOT select any existing QGIS tool for thematic map creation, rather select from the 'Customized tools' provided. E.g, do not select 'categorized renderer from styles'",
                         f"For a single tool, your response should be in form of this example: {ToolSelect_reply_example1}",
-                        "When creating charts or plots such as barchart, barplot, scatterplot etc., you should make use of `seaborn` by default except another method is specified",
                         f"If the tools mentioned in the explanation is more than one, then the tools should be in the list 'Selected tool'. For example; {ToolSelect_reply_example2}",
                         "NOTE:  Algorithm `native:rastercalculator` is not the correct ID for Raster Calculator, the correct ID is `native:rastercalc`",
                         "NOTE: You are not limited to QGIS python functions, you can also use other python functions asuch as geopandas, numpy, scipy etc.",
@@ -435,21 +445,20 @@ operation_requirement = [
     "If you need to use any field from the input shapefile layer, first access the fields (example code: `fields = input_layer.fields()`), then select the appropriate field carefully from the list of fields in the layer.",
     "If you need to load a raster layer, use this format `output_layer = QgsRasterLayer(output_path, 'Slope Output')`",
     "When using Raster calculator 'native:rastercalculator' is wrong rather the correct ID for the Raster Calculator algorithm is 'native:rastercalc'.",
-    "When creating plots such as barplot, scatterplot etc., usually their result is a html or image file. Always save the file into the specified output directory and print the output layer. Do not Load the output HTML/ or image in QGIS as a standalone resource. ",
-    "When creating charts or plots such as barchart, barplot, scatterplot etc., you should make use of `seaborn` by default except another method is specified",
-    "When creating a scatterplot, 'native:scatterplot' and 'qgis:scatterplot' are not supported. The correct tool is qgis:vectorlayerscatterplot.",
+    "When creating charts/plots (bar, scatter, box, etc.): use `seaborn` by default; save the result (html/image) to the output directory and only print the file path; do NOT load the output into QGIS. For scatter plots, use 'qgis:vectorlayerscatterplot' (NOT 'native:scatterplot' or 'qgis:scatterplot').",
     "When using tool that is used to generate counts e.g 'Vector information(gdal:ogrinfo), Count points in polygon(native:countpointsinpolygon), etc., don't just print the file path (e.g the html path) but also ensure you print the count(e.g Number of conties)",
     "NOTE: `vector_layer.featureCount()` can be use to generate the count of features",
     "If you are printing any file path (e.g html, png, etc.), Do not include any additional information. just print the file path",
     "When loading a CSV layer as a layer, use this: `'f'file///{csv_path}?delimeter=,''`, assuming the csv is comma-separated, but use the csv_path directly for the Input parameter in join operations.",
     "If you are to use processing algorithm, you do not need to include the code to load a data",
-    "For tasks that contains interrogative words such as ('how', 'what', 'why', 'when', 'where', 'which'), ensure that no layers are loaded into the QGIS, instead the result should be printed",    "If you are creating plots such as barplot, scatterplot etc., usually their result is a html file. Always save the html file into the specified output directory and print the output layer. Do not Load the output HTML in QGIS as a standalone resource.",
+    "For tasks that contains interrogative words such as ('how', 'what', 'why', 'when', 'where', 'which'), ensure that no layers are loaded into the QGIS, instead the result should be printed",
     "If you are using the processing algorithm, make the output parameter to be the user's specified output directory . And use `QgsVectorLayer` to load the feature as a new layer: For example `Buffer_layer = QgsVectorLayer(result['OUTPUT'], 'Buffered output', 'ogr')` for the case of a shapefile.",
     "Similarly, if you used geopandas to generate a new layer, use `QgsVectorLayer` to load the feature as a new layer: For example `Buffer_layer = QgsVectorLayer(result['OUTPUT'], 'Buffered output', 'ogr')` for the case of a shapefile.",
     "Whenever a new layer is being saved, ensure the code first checks if a file with the same name already exists in the output directory, and if it doesn't, go ahead and save with the original name, but if same name exist, append a number to the filename to create a unique name, thereby avoiding any errors related to overwriting or saving the layer.",
     "When naming any output layer, choose a name that is concise, descriptive, easy to read, and free of spaces.",
     "Ensure that temporary layer is not used as the output parameter",
     "When using `gdal:proximity`, ensure all shapefiles are rasterized before using them",
+    "When using ANY GDAL processing tool (any algorithm with ID starting with `gdal:`), NEVER pass a raw file path string as the INPUT parameter. Many QGIS versions will silently skip execution without any error when given a pure path. Always wrap the path first: use `QgsVectorLayer(path, 'name', 'ogr')` for vector data or `QgsRasterLayer(path, 'name')` for raster data, and pass the layer object as input.",
     "When performing multi-step tasks that involve creating intermediary layers, ensure there is a waiting period before proceeding to the next step. This allows enough time for the intermediary layers to be fully created, preventing errors such as 'data not found.'",
     "When adding a new field to the a shapefile, it should be noted that the maximum length for field name is 10, so avoid mismatch in the fieldname in the data and in the calculation."
     "When creating a thematic map after joining attributes to a shapefile, ensure that the field name length for the attribute use for thematic map do not exceed 10, if it exceed 10, truncate the field name (E.g, 'White_Population' can be truncated to 'White_Popu'). Adhering to the 10 field name length limit ensures consistency and prevents errors during thematic map creation."
@@ -459,44 +468,48 @@ operation_requirement = [
 operation_code_review_role = r''' A professional Geo-information scientist and Python developer with over 20 years of experience in Geographic Information Science (GIS). You are highly knowledgeable about spatial data processing and coding, and you specialize in code review. You are meticulous and enjoy identifying potential bugs and data misunderstandings in code.
 '''
 
-operation_code_review_task_prefix = r'''Review the code of a function to determine whether it meets its associated requirements and documentation. If it does not, correct it and return the complete corrected code.'''
-operation_code_review_requirement = ["Review the codes very carefully to ensure it meets its requirement.",
-                                    "NOTE: You are not limited to QGIS tools only, you can also make use of python libraries",
-                                    "Compare the code with the code example of any tool being used which is contained in the tool documentation (if provided), and ensure the parameters are set correctly.",
-                                    "Ensure that QGIS initialization code are not included in the script.",
-                                    "If you need to use `QColor` should be imported from `PyQt5.QtGui`",
-                                    "Put your reply into a Python code block, Explanation or conversation can be Python comments at the begining of the code block(enclosed by ```python and ```).",
-                                     "The python code is only in a function named in with the operation name e.g 'perform_idw_interpolation()'. The last line is to execute this function.",
-                                    "Only do the reprojection as needed when 1) e.g., calculating distances/buffers that needs projected CRS, and the layers have different projections",
-                                    "When performing any operation that generates an output vector or raster layer , include the code to load the resulting output layer into QGIS",
-                                    "When performing any operation such as counting of features, generating plots (scatter plot, bar plot), etc., which do not require creation of new layers, do not include load the resulting output layer into QGIS rather print the result",
-                                    "For tasks that contains interrogative words such as ('how', 'what', 'why', 'when', 'where', 'which'), ensure that no layers are loaded into the QGIS, instead the result should be printed",
-                                    "The data needed for the task are already loaded in the qgis environment, so there is no need to load data; just use the provided data path.",
-                                    "The code should not contain any validity check.",
-                                    "The code is designed to be run within the QGIS Python environment, where the relevant QGIS libraries are available. However, if any third-party libraries needed, it should always be imported.",
-                                    f"When using QGIS processing algorithm, use `QgsVectorLayer` to load shapefiles. For example `output_layer = QgsVectorLayer(result['OUTPUT'], 'Layer Name', 'ogr')`",
-                                    "Ensure that the data paths in the code examples are replaced with the data paths provided by the user approprately",
-                                    "When using Raster calculator, 'native:rastercalculator' is wrong rather the correct ID for the Raster Calculator algorithm is 'native:rastercalc'.",
-                                    "When creating plots such as barplot, scatterplot etc., usually their result is a html or image file. Always save the file into the specified output directory and print the output layer. Do not Load the output HTML in QGIS as a standalone resource. ",# Always print out the result"
-                                    "When creating charts or plots such as barchart, barplot, scatterplot etc., you should make use of `seaborn` by default except another method is specified",
-                                    "When printing the result of plots e.g barplot,scatterplot, boxplot etc, always print out the file path of the result only, ensure any description or comment is not added.",
-                                    "When using tool that is used to generate counts e.g 'Vector information(gdal:ogrinfo), Count points in polygon(native:countpointsinpolygon), etc., don't just print the file path (e.g the html path) but also ensure you print the count(e.g Number of conties)",
-                                    "NOTE: `vector_layer.featureCount()` can be use to generate the count of features",
-                                     "If you are printing any file path (e.g html, png, etc.), Do not include any additional information. just print the file path",
-                                    "Do not generate a layer for tasks that only require printing the answer, like questions of how, what, why, etc. e.g., for tasks like 'How many counties are there in PA?', 'What is the distance from A to B', etc.",
-                                    "When creating a scatter plot, 'native:scatterplot' and 'qgis:scatterplot' are not supported. The correct tool is qgis:vectorlayerscatterplot, ensure the correct tool is used",
-                                    "When creating density maps, do not use `matplotlib` to visualize the result, ensure the result is saved as 'tif' and loaded to QGIS",
-                                    f"When using the processing algorithm, make the output parameter to be the user's specified output directory . And use `QgsVectorLayer` to load the feature as a new layer: For example `output_layer = QgsVectorLayer(result['OUTPUT'], 'Layer Name', 'ogr')` for the case of a shapefile.",
-                                    f"Similarly, if you used geopandas to generate a new layer, use `QgsVectorLayer` to load the feature as a new layer: For example `buffer_layer = QgsVectorLayer(result['OUTPUT'], 'Buffered output', 'ogr')` for the case of a shapefile.",
-                                    "Whenever a new layer is being saved, ensure the code first checks if a file with the same name already exists in the output directory, and if it doesn't, go ahead and save with the original name, but if same name exist, append a number to the filename to create a unique name, thereby avoiding any errors related to overwriting or saving the layer.",
-                                    "When naming any output layer, choose a name that is concise, descriptive, easy to read, and free of spaces.",
-                                     "Ensure that temporary layer is not used as the output parameter",
-                                    "When using `gdal:proximity`, ensure all shapefiles are rasterized before using them",
-                                    "When performing multi-step tasks that involve creating intermediary layers, ensure there is a waiting period before proceeding to the next step. This allows enough time for the intermediary layers to be fully created, preventing errors such as 'data not found.'",
-                                    "When adding a new field to the a shapefile, it should be noted that the maximum length for field name is 10, so avoid mismatch in the fieldname in the data and in the calculation.",
-                                    "When creating a thematic map after joining attributes to a shapefile, ensure that the field name length for the attribute use for thematic map do not exceed 10, if it exceed 10, truncate the field name. Adhering to the 10 field name length limit ensures consistency and prevents errors during thematic map creation."
+operation_code_review_task_prefix = r'''You are reviewing generated Python code for a QGIS geoprocessing task.
+Your context includes:
+- The **Execution Plan** (in the system message under "=== Current Plan ===") specifying the tools, parameters, and step order.
+- The **Tool Documentation** with correct parameter names and code examples.
+- The **Data Properties** describing the actual dataset (fields, CRS, geometry type).
 
-                                     ]
+Your job: compare the code against the plan, documentation, and data, then fix any issues.
+If the code is correct, return it unchanged. Always return the complete corrected code.'''
+
+operation_code_review_requirement = [
+    # ── 核心审查：对照 Plan ──
+    "Verify the code implements EVERY step in the Execution Plan in the correct order. Flag missing or out-of-order steps.",
+    "Verify each tool ID in the code matches the tool ID specified in the plan (e.g. 'native:joinbylocationsummary', not a made-up ID).",
+    "Verify tool parameters (PREDICATE, SUMMARIES, FIELD, etc.) match the plan and the tool documentation examples.",
+    "Verify input/output layer paths: the code must use the exact data paths provided, not placeholder paths.",
+    # ── 数据一致性 ──
+    "Verify field names used in the code actually exist in the data (check the Data Properties section). Watch out for truncation (shapefile 10-char limit) and case sensitivity.",
+    "Verify CRS handling: only add reprojection if the plan or data properties indicate mismatched CRS.",
+    # ── 常见 bug ──
+    "The Raster Calculator algorithm ID must be 'native:rastercalc', NOT 'native:rastercalculator'.",
+    "Scatter plot must use 'qgis:vectorlayerscatterplot', NOT 'native:scatterplot' or 'qgis:scatterplot'.",
+    "When using `gdal:proximity`, ensure shapefiles are rasterized first.",
+    "When using ANY GDAL tool (any `gdal:*` algorithm), verify the INPUT value is a QgsVectorLayer or QgsRasterLayer object, NOT a raw path string. A raw path silently causes the tool to skip execution without raising any error.",
+    "Output must be saved to the user's workspace directory, not a temporary path. Ensure that temporary layer is not used as the output parameter.",
+    "If a file with the same output name already exists, append a number to avoid overwriting.",
+    "For multi-step tasks with intermediate layers, add a small delay or flush between steps to prevent 'data not found' errors.",
+    # ── 代码生成规范（审查修改代码时须遵守）──
+    "Put your reply into a single Python code block (enclosed by ```python and ```). Explanations go as comments at the beginning of the code block.",
+    "The python code must be wrapped in a function named after the operation (e.g. 'perform_idw_interpolation()'). The last line must call this function.",
+    "Do NOT include QGIS initialization code in the script.",
+    "If you need `QColor`, import it from `PyQt5.QtGui`.",
+    "When using QGIS processing algorithms, use `QgsVectorLayer` to load results. Example: `output_layer = QgsVectorLayer(result['OUTPUT'], 'Layer Name', 'ogr')`.",
+    "Similarly for geopandas outputs, use `QgsVectorLayer` to load the saved file into QGIS.",
+    "When performing operations that generate output layers (vector/raster), include code to load the result into QGIS.",
+    "When performing operations that only produce counts, stats, or plots (no new layers), do NOT load layers — just print the result.",
+    "For interrogative tasks (how, what, why, when, where, which), only print the answer, do not create or load layers.",
+    "The data is already loaded in QGIS — use the provided data paths directly, do not re-load data.",
+    "The code runs inside QGIS Python environment. Third-party libraries must be explicitly imported if needed.",
+    "When creating charts/plots, use `seaborn` by default. Save the output file to the workspace directory and print only the file path.",
+    "When naming output layers, choose concise, descriptive names without spaces.",
+    "When adding fields to shapefiles, field names must not exceed 10 characters. Ensure consistency between field names in data and in calculations.",
+]
 
 
 
@@ -534,9 +547,7 @@ def get_smart_debug_requirements(error_msg="", code="", operation_type=None):
         "When using Raster calculator 'native:rastercalculator' is wrong rather the correct ID for the Raster Calculator algorithm is 'native:rastercalc'.",
         "When loading a CSV layer as a layer, use this: `'f'file///{csv_path}?delimeter=,''`, assuming the csv is comma-separated, but use the csv_path directly for the Input parameter in join operations.",
         "For tasks that contains interrogative words such as ('how', 'what', 'why', 'when', 'where', 'which'), ensure that no layers are loaded into the QGIS, instead the result should be printed",
-        "When creating plots such as barplot, scatterplot etc., usually their result is a html or image file. Always save the file into the specified output directory and print the output layer. Do not Load the output HTML in QGIS as a standalone resource.",
-        "When printing the result of plots e.g barplot,scatterplot, boxplot etc, always print out the file path of the result only, ensure any description or comment is not added.",
-        "When creating a scatter plot, 'native:scatterplot' and 'qgis:scatterplot' are not supported. The correct tool is qgis:vectorlayerscatterplot, ensure the correct tool is used",
+        "When creating charts/plots: use `seaborn` by default; save to output directory and only print the file path (no extra comments); for scatter plots use 'qgis:vectorlayerscatterplot' (NOT 'native:scatterplot').",
         "When using tool that is used to generate counts e.g 'Vector information(gdal:ogrinfo), Count points in polygon(native:countpointsinpolygon), etc., ensure you print the count",
         "NOTE: `vector_layer.featureCount()` can be use to generate the count of features",
         "Whenever a new layer is being saved, ensure the code first checks if a file with the same name already exists in the output directory, and if it does, append a number (e.g filename_1, filename_2, etc) to the filename to create a unique name, thereby avoiding any errors related to overwriting or saving the layer.",
@@ -575,9 +586,7 @@ debug_requirement = [
     "If you need to use any field from the input shapefile layer, first access the fields (example code: `fields = input_layer.fields()`), then select the appropriate field carefully from the list of fields in the layer.",
     "When loading a CSV layer as a layer, use this: `'f'file///{csv_path}?delimeter=,''`, assuming the csv is comma-separated, but use the csv_path directly for the Input parameter in join operations.",
     "For tasks that contains interrogative words such as ('how', 'what', 'why', 'when', 'where', 'which'), ensure that no layers are loaded into the QGIS, instead the result should be printed",
-    "When creating plots such as barplot, scatterplot etc., usually their result is a html or image file. Always save the file into the specified output directory and print the output layer. Do not Load the output HTML in QGIS as a standalone resource. Always print out the file path of the result only without adding any comment.",
-    "When printing the result of plots e.g barplot,scatterplot, boxplot etc, always print out the file path of the result only, ensure any description or comment is not added.",
-    "When creating a scatter plot, 'native:scatterplot' and 'qgis:scatterplot' are not supported. The correct tool is qgis:vectorlayerscatterplot, ensure the correct tool is used",
+    "When creating charts/plots: use `seaborn` by default; save to output directory and only print the file path (no extra comments); for scatter plots use 'qgis:vectorlayerscatterplot' (NOT 'native:scatterplot').",
     "When using tool that is used to generate counts e.g 'Vector information(gdal:ogrinfo), Count points in polygon(native:countpointsinpolygon), etc., ensure you print the count",
     "NOTE: `vector_layer.featureCount()` can be use to generate the count of features",
     "When using the processing algorithm, make the output parameter to be the user's specified output directory . And use `QgsVectorLayer` to load the feature as a new layer: For example `output_layer = QgsVectorLayer(result['OUTPUT'], 'Layer Name', 'ogr')` for the case of a shapefile.",

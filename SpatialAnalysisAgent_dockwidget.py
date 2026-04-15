@@ -406,9 +406,19 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # self.graphview()
 
         setup_knowledge_tab(self)
-        
+
+        # Apply the syntax highlighter
+        self.highlighter = PythonHighlighter(self.output_text_edit.document())
+        self.code_highlighter = PythonHighlighter(self.CodeEditor.document(), always_highlight=True)
+
+        # Set default workspace directory to plugin directory
+        # （必须在 init_knowledge_for_workspace 之前，否则 workspace_dir 为空）
+        workspace_dir = os.path.join(current_script_dir, 'Default_workspace')
+        self.create_default_workspace(workspace_dir)
+        self.workspace_directoryLineEdit2.setText(workspace_dir)
+
         # Initialise knowledge for the current workspace
-        workspace_dir = self.workspace_directoryLineEdit2.text()
+        # （此时 workspace_dir 已有正确默认值）
         qgis_project_path = None
         try:
             proj_path = QgsProject.instance().fileName()
@@ -416,20 +426,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 qgis_project_path = proj_path
         except Exception:
             pass
-        
+        workspace_dir = self.workspace_directoryLineEdit2.text()
         init_knowledge_for_workspace(self, workspace_dir, qgis_project_path)
-        # self.graphview()
-
-        # Apply the syntax highlighter
-        self.highlighter = PythonHighlighter(self.output_text_edit.document())
-        self.code_highlighter = PythonHighlighter(self.CodeEditor.document(), always_highlight=True)
-
-        # Set default workspace directory to plugin directory
-        # current_script_dir = os.path.dirname(os.path.abspath(__file__))
-        workspace_dir = os.path.join(current_script_dir, 'Default_workspace')
-        self.create_default_workspace(workspace_dir)
-        # self.workspace_directoryLineEdit.setPlainText(workspace_dir)
-        self.workspace_directoryLineEdit2.setText(workspace_dir)
 
         # Connect button to open directory dialog
         self.select_workspace_Btn.clicked.connect(self.open_directory_dialog)
@@ -472,6 +470,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.agent.plan_ready.connect(self._on_agent_plan_ready, Qt.QueuedConnection)
         self.agent.result_ready.connect(self._on_agent_result_ready, Qt.QueuedConnection)
         self.agent.task_finished.connect(self._on_agent_task_finished, Qt.QueuedConnection)
+        # Phase 5: 知识库更新信号连接
+        self.agent.knowledge_update_requested.connect(self._on_knowledge_update_requested, Qt.QueuedConnection)
         
     def initUI(self):
 
@@ -512,6 +512,9 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.add_document_github_button.clicked.connect(
             self.show_contribution_dialog)  ## For adding data source to GitHub
         self.tabWidget.setCurrentIndex(0)
+
+        # Ensure review checkbox defaults to unchecked
+        self.review_checkbox.setChecked(False)
 
         # self.read_updated_config()
         # Populate data_pathLineEdit with currently loaded layers
@@ -1523,6 +1526,15 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             lambda err: self.update_chatgpt_ans_textBrowser(f"Error: {err}", is_user=False))
         self._chat_thread.start()
 
+    def _sync_agent_params(self):
+        """同步 UI 参数到 AgentController（给不经过 _run_via_agent 的路径用）"""
+        self.agent.model_name = self.modelNameComboBox.currentText()
+        self.agent.data_path = self.data_pathLineEdit.toPlainText()
+        self.agent.workspace_directory = self.workspace_directoryLineEdit2.text()
+        self.agent.is_review = self.review_checkbox.isChecked()
+        if not self.agent.reasoning_effort_value:
+            self.agent.reasoning_effort_value = 'medium'
+
     def _on_intent_classified(self, intent):
         """Callback when intent classification thread finishes."""
         from PyQt5.QtWidgets import QMessageBox
@@ -1532,8 +1544,11 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         reasoning_effort = self.reasoningEffortComboBox.currentText() if self.reasoningEffortComboBox.isVisible() else None
 
         if intent == 'CHAT':
+            # 统一走 AgentController 对话循环，保留完整会话上下文
             self.update_chatgpt_ans_textBrowser("Generating response...", is_user=False)
-            self.chatgpt_direct_answer(user_message)
+            self.run_button.setEnabled(False)
+            self.task_LineEdit.setEnabled(False)
+            self.agent.handle_text_input(user_message)
 
         elif intent == 'GIS_TASK':
             if current_model == 'gpt-5':
@@ -1561,8 +1576,11 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 self.update_chatgpt_ans_textBrowser("Analyzing the task...", is_user=False)
                 self._run_via_agent()
             else:
+                # 统一走 AgentController 对话循环，保留完整会话上下文
                 self.update_chatgpt_ans_textBrowser("Generating response...", is_user=False)
-                self.chatgpt_direct_answer(user_message)
+                self.run_button.setEnabled(False)
+                self.task_LineEdit.setEnabled(False)
+                self.agent.handle_text_input(user_message)
     
     def send_button_clicked(self):
         """Slot to handle the send button click."""
@@ -1606,53 +1624,16 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         # Now read the updated config file to refresh the API key
         self.read_updated_config()
 
-        # if not self.ChatMode_checkbox.isChecked() and self.data_pathLineEdit.isEnabled() and not self.data_pathLineEdit.toPlainText().strip():
-        #     self.update_chatgpt_ans_textBrowser(f"Please load the data to be used.", is_user=False)
-        #     return  # Stop further execution if data path is required but empty
+        # ── 统一同步 UI 参数到 AgentController ──
+        # 所有路径（CONVERSING / CHAT / GIS_TASK）都需要最新的 data_path、model_name
+        self._sync_agent_params()
 
-        # 数据路径检查已移至 AgentController._run_idle_input()，
-        # 只在意图分类为 GIS 任务时才要求加载数据。
-        # 闲聊不需要数据。
-
-        # Add initial processing message
-        # self.update_chatgpt_ans_textBrowser("Initializing analysis...", is_user=False)
-
-        # if self.ChatMode_checkbox.isChecked():
-        #     self.update_chatgpt_ans_textBrowser("Generating response...", is_user=False)
-        #     self.chatgpt_direct_answer(user_message)
-        # else:
-        #     # Check if GPT-5 is selected to show appropriate message
-        #     current_model = self.modelNameComboBox.currentText()
-        #     if current_model == 'gpt-5':
-        #         self.update_chatgpt_ans_textBrowser("Analyzing the task (may take some time while GPT-5 is reasoning)...", is_user=False)
-        #     else:
-        #         self.update_chatgpt_ans_textBrowser("Analyzing the task...", is_user=False)
-        #     self.run_script()
-
-        # Check if GPT-5 or GPT-5.1 (with reasoning effort) is selected to show appropriate message
-        # ── Intent Classification ──
-        current_model = self.modelNameComboBox.currentText()
-
-        current_state = 'IDLE'
-        plan_summary = ''
-        if hasattr(self, 'agent_controller') and self.agent_controller:
-            current_state = getattr(self.agent_controller, 'current_state', 'IDLE')
-            if hasattr(self.agent_controller, 'session'):
-                plan_summary = getattr(self.agent_controller.session, 'current_plan_summary', '')
-
-        self.update_chatgpt_ans_textBrowser("Analyzing your intent...", is_user=False)
-
-        # Store user_message for the callback
-        self._pending_user_message = user_message
-
-        self._intent_thread = IntentClassifyThread(
-            user_input=user_message,
-            model_name=current_model,
-            state=current_state,
-            plan_summary=plan_summary
-        )
-        self._intent_thread.result_ready.connect(self._on_intent_classified)
-        self._intent_thread.start()
+        # ── 统一入口：所有消息走 handle_text_input → 对话循环 → OutputParser 路由 ──
+        # 不再使用意图分类线程；由 LLM + OutputParser 在对话循环中判断意图
+        self.update_chatgpt_ans_textBrowser("Processing...", is_user=False)
+        self.run_button.setEnabled(False)
+        self.task_LineEdit.setEnabled(False)
+        self.agent.handle_text_input(user_message)
 
 
 
@@ -2487,10 +2468,19 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             self.append_execution_output("The script finished with errors.")
 
     def clear_textboxes(self):
+        # Stop any running agent task and return to IDLE
+        if hasattr(self, 'agent') and self.agent.get_state_name() != "IDLE":
+            self.agent.handle_user_action(UserAction.CANCEL)
+        # Also stop legacy thread if running
+        if hasattr(self, 'thread') and self.thread and self.thread.isRunning():
+            self.thread.terminate()
+            self.thread.wait(2000)
         self.output_text_edit.clear()
         self.task_LineEdit.clear()
         self.chatgpt_ans_textBrowser.clear()
         self.conversation_history = []
+        # Reset UI to IDLE state
+        self._on_state_changed("IDLE")
 
     def interrupt(self):
         if self.thread:
@@ -2621,6 +2611,14 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             # 动态更新模型列表
             self.modelNameComboBox.clear()
             self.modelNameComboBox.addItems(result['models'])
+            # 关键：将检测到的 provider 同步到后端路由，
+            # 避免对话时仍走 OpenAI 默认路径
+            try:
+                from SpatialAnalysisAgent_ModelProvider import ModelProviderFactory
+                ModelProviderFactory.set_active_provider(result['provider'])
+                print(f"[Detection] Active provider set to: {result['provider']}")
+            except Exception as e:
+                print(f"[Detection] Failed to set active provider: {e}")
             # 触发一次 model changed 更新 reasoning effort 等联动
             self.on_model_changed()
 
@@ -2984,6 +2982,33 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.task_LineEdit.setEnabled(True)
         self.data_pathLineEdit.setEnabled(True)
         self.loadData.setEnabled(True)
+
+    def _on_knowledge_update_requested(self, suggestion: str):
+        """
+        处理 AI 的知识库更新建议：直接写入知识库，不弹窗。
+        结果在对话框中显示。
+        """
+        if not (hasattr(self, 'knowledge_manager') and self.knowledge_manager):
+            self.update_chatgpt_ans_textBrowser(
+                "Knowledge manager not initialized. Please set a workspace first.", is_user=False)
+            return
+
+        try:
+            existing = ""
+            if hasattr(self.knowledge_manager, '_notes_path') and self.knowledge_manager._notes_path.exists():
+                existing = self.knowledge_manager._notes_path.read_text(encoding="utf-8")
+            new_text = existing.rstrip() + "\n\n" + suggestion if existing.strip() else suggestion
+            self.knowledge_manager.save_notes(new_text)
+            self.update_chatgpt_ans_textBrowser("Knowledge saved successfully.", is_user=False)
+            # 刷新 Notes 编辑器（而非仅刷新文档列表）
+            try:
+                self.knowledge_notes_editor.blockSignals(True)
+                self.knowledge_notes_editor.setPlainText(self.knowledge_manager.get_notes())
+                self.knowledge_notes_editor.blockSignals(False)
+            except Exception:
+                pass
+        except Exception as e:
+            self.update_chatgpt_ans_textBrowser(f"Failed to save knowledge: {e}", is_user=False)
 
 
 # The classFactory function must be placed at the end of this file

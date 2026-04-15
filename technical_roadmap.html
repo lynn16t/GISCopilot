@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SpatialAnalysisAgent 技术路线图</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif; background: #0f1117; color: #e0e0e0; line-height: 1.6; }
+
+  h1 { text-align: center; padding: 36px 20px 8px; font-size: 2rem; color: #fff; letter-spacing: 2px; }
+  .subtitle { text-align: center; color: #7a8399; margin-bottom: 40px; font-size: 0.95rem; }
+
+  .pipeline { max-width: 1100px; margin: 0 auto; padding: 0 20px 80px; }
+
+  /* ── Stage card ── */
+  .stage {
+    background: #1a1d2e;
+    border: 1px solid #2a2d3e;
+    border-radius: 12px;
+    margin-bottom: 16px;
+    overflow: hidden;
+    transition: box-shadow .2s;
+  }
+  .stage:hover { box-shadow: 0 4px 24px rgba(80,120,255,.18); }
+
+  .stage-header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 16px 22px; cursor: pointer;
+    border-bottom: 1px solid transparent;
+    transition: background .15s;
+    user-select: none;
+  }
+  .stage-header:hover { background: #1f2235; }
+  .stage-header.open { border-bottom-color: #2a2d3e; }
+
+  .stage-num {
+    width: 34px; height: 34px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; font-size: 0.85rem; flex-shrink: 0;
+  }
+  .stage-title { font-size: 1.05rem; font-weight: 600; flex: 1; }
+  .stage-tag {
+    font-size: 0.72rem; padding: 2px 10px; border-radius: 20px;
+    font-weight: 600; letter-spacing: .5px;
+  }
+  .chevron { font-size: 0.8rem; color: #555; transition: transform .2s; }
+  .stage-header.open .chevron { transform: rotate(90deg); }
+
+  .stage-body { padding: 22px 26px; display: none; }
+  .stage-body.open { display: block; }
+
+  /* ── Color themes per stage ── */
+  .c-conversation .stage-num { background: #1e3a5f; color: #60a5fa; }
+  .c-conversation .stage-tag { background: #1e3a5f; color: #60a5fa; }
+  .c-routing .stage-num { background: #2d1f4e; color: #c084fc; }
+  .c-routing .stage-tag { background: #2d1f4e; color: #c084fc; }
+  .c-knowledge .stage-num { background: #1e3d2f; color: #34d399; }
+  .c-knowledge .stage-tag { background: #1e3d2f; color: #34d399; }
+  .c-analysis .stage-num { background: #3d2a10; color: #fb923c; }
+  .c-analysis .stage-tag { background: #3d2a10; color: #fb923c; }
+  .c-embedding .stage-num { background: #2a1f3d; color: #a78bfa; }
+  .c-embedding .stage-tag { background: #2a1f3d; color: #a78bfa; }
+  .c-toolsel .stage-num { background: #1f3530; color: #2dd4bf; }
+  .c-toolsel .stage-tag { background: #1f3530; color: #2dd4bf; }
+  .c-plan .stage-num { background: #3a2020; color: #f87171; }
+  .c-plan .stage-tag { background: #3a2020; color: #f87171; }
+  .c-codegen .stage-num { background: #1e2f3d; color: #38bdf8; }
+  .c-codegen .stage-tag { background: #1e2f3d; color: #38bdf8; }
+  .c-review .stage-num { background: #2d2d10; color: #facc15; }
+  .c-review .stage-tag { background: #2d2d10; color: #facc15; }
+  .c-exec .stage-num { background: #2d1020; color: #fb7185; }
+  .c-exec .stage-tag { background: #2d1020; color: #fb7185; }
+  .c-api .stage-num { background: #102d2d; color: #22d3ee; }
+  .c-api .stage-tag { background: #102d2d; color: #22d3ee; }
+
+  /* ── Sections inside body ── */
+  .section { margin-bottom: 18px; }
+  .section-title {
+    font-size: 0.78rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1.2px; color: #555; margin-bottom: 8px;
+  }
+
+  /* ── Transfer arrow between stages ── */
+  .transfer {
+    display: flex; align-items: flex-start; gap: 12px;
+    margin: -6px 0 10px 0; padding: 10px 16px;
+    background: #12141f; border-radius: 8px;
+    border-left: 3px solid #3a3d55;
+  }
+  .transfer-arrow { color: #3a3d55; font-size: 1.2rem; flex-shrink: 0; margin-top: 2px; }
+  .transfer-label { font-size: 0.78rem; font-weight: 700; color: #7a8399; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .8px; }
+  .transfer-content { font-size: 0.85rem; color: #b0b8d0; }
+
+  /* ── Prompt box ── */
+  .prompt-box {
+    background: #0d1a2d; border: 1px solid #1e3a5f;
+    border-radius: 8px; padding: 12px 16px; margin: 6px 0;
+    font-size: 0.82rem; color: #93c5fd;
+  }
+  .prompt-box .label {
+    font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 1px; color: #3b82f6; margin-bottom: 6px;
+  }
+  .prompt-box .field { color: #fde68a; }
+  .prompt-box .injected { color: #86efac; font-style: italic; }
+  .prompt-box .arch { color: #c084fc; }
+
+  /* ── Info grid ── */
+  .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  @media(max-width:700px){ .info-grid { grid-template-columns: 1fr; } }
+
+  .info-card {
+    background: #13151f; border: 1px solid #252840;
+    border-radius: 8px; padding: 12px 14px; font-size: 0.83rem;
+  }
+  .info-card .card-title { font-weight: 700; color: #9ca3af; margin-bottom: 6px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: .8px; }
+
+  /* ── Tag pills ── */
+  .pill {
+    display: inline-block; padding: 2px 9px; border-radius: 12px;
+    font-size: 0.73rem; font-weight: 600; margin: 2px 2px;
+  }
+  .pill-blue { background:#1e3a5f; color:#60a5fa; }
+  .pill-green { background:#1e3d2f; color:#34d399; }
+  .pill-orange { background:#3d2a10; color:#fb923c; }
+  .pill-purple { background:#2d1f4e; color:#c084fc; }
+  .pill-red { background:#3a2020; color:#f87171; }
+  .pill-yellow { background:#2d2d10; color:#facc15; }
+  .pill-cyan { background:#102d2d; color:#22d3ee; }
+  .pill-pink { background:#2d1020; color:#fb7185; }
+
+  /* ── Flow list ── */
+  .flow-list { list-style: none; padding: 0; }
+  .flow-list li {
+    padding: 5px 0 5px 18px;
+    border-left: 2px solid #2a2d3e;
+    margin-left: 6px; margin-bottom: 4px;
+    font-size: 0.85rem; color: #c0c8e0;
+    position: relative;
+  }
+  .flow-list li::before {
+    content: '▸'; position: absolute; left: -12px;
+    color: #3b82f6; font-size: 0.75rem; top: 5px;
+  }
+
+  /* ── Code snippet ── */
+  .code {
+    background: #0a0c14; border: 1px solid #1e2030;
+    border-radius: 6px; padding: 10px 14px;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 0.78rem; color: #a0e0b0;
+    overflow-x: auto; margin: 6px 0;
+    white-space: pre;
+  }
+
+  /* ── Warning / note ── */
+  .note {
+    background: #1f1a0a; border-left: 3px solid #ca8a04;
+    padding: 8px 14px; border-radius: 0 6px 6px 0;
+    font-size: 0.82rem; color: #fbbf24; margin: 6px 0;
+  }
+  .note-red {
+    background: #1f0a0a; border-left: 3px solid #dc2626;
+    padding: 8px 14px; border-radius: 0 6px 6px 0;
+    font-size: 0.82rem; color: #f87171; margin: 6px 0;
+  }
+
+  /* ── Big arrow between stages ── */
+  .big-arrow {
+    text-align: center; color: #3a3d55;
+    font-size: 1.6rem; margin: 4px 0; line-height: 1;
+  }
+
+  hr.divider { border: none; border-top: 1px solid #2a2d3e; margin: 14px 0; }
+
+  p.desc { font-size: 0.85rem; color: #b0b8d0; margin-bottom: 10px; }
+
+  .badge {
+    display: inline-block; padding: 1px 8px; border-radius: 4px;
+    font-size: 0.7rem; font-weight: 700; vertical-align: middle; margin-left: 4px;
+  }
+  .badge-new { background: #1e3d2f; color: #34d399; }
+  .badge-key { background: #2d1f4e; color: #c084fc; }
+</style>
+</head>
+<body>
+
+<h1>SpatialAnalysisAgent · 完整技术路线图</h1>
+<p class="subtitle">从用户消息输入 → 对话分类 → 任务确认 → 分析管线 → 代码执行 · 每个环节的数据传递 / Prompt 构成 / 知识注入详细标注</p>
+
+<div class="pipeline">
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 0: API层 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-api">
+  <div class="stage-header open" onclick="toggle(this)">
+    <div class="stage-num">0</div>
+    <div class="stage-title">API 层 · ModelProvider</div>
+    <div class="stage-tag">底层通信</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body open">
+    <p class="desc">所有 LLM 调用都经过统一接口 <code>unified_llm_call()</code>，内部路由到具体 Provider。</p>
+
+    <div class="info-grid">
+      <div class="info-card">
+        <div class="card-title">支持的 Provider</div>
+        <span class="pill pill-cyan">OpenAIProvider</span>
+        <span class="pill pill-cyan">OllamaProvider</span>
+        <span class="pill pill-cyan">（可扩展）</span>
+        <br><br>
+        <div style="font-size:0.82rem;color:#7a8399">路由依据：<br><code>config.ini → API_Key</code> 段决定使用哪个 provider。<br>模型名 → <code>ModelProviderFactory._model_providers</code> 映射。</div>
+      </div>
+      <div class="info-card">
+        <div class="card-title">统一调用签名</div>
+        <div class="code">unified_llm_call(
+  request_id,   # 本次请求追踪ID
+  messages,     # List[{role,content}]
+  model_name,
+  stream,       # True/False
+  reasoning_effort  # gpt-5系列专属
+)</div>
+      </div>
+    </div>
+
+    <div class="section" style="margin-top:14px">
+      <div class="section-title">Streaming 处理</div>
+      <ul class="flow-list">
+        <li>stream=True：逐 chunk 拼接，通过 <code>AgentWorkerThread.output_written</code> 信号实时推到 GUI</li>
+        <li>stream=False：等待完整回复（code_review 步骤使用）</li>
+        <li>OpenAI 格式：读 <code>chunk.choices[0].delta.content</code></li>
+        <li>GPT-5 格式：额外兼容 <code>chunk.delta.content</code> / <code>chunk.content</code> / <code>chunk.output</code></li>
+      </ul>
+    </div>
+
+    <div class="note">
+      <b>reasoning_effort</b>：仅对 gpt-5 / gpt-5.1 / gpt-5.2 生效，其他模型自动剥离该参数。
+    </div>
+
+    <div class="section" style="margin-top:14px">
+      <div class="section-title">LLM 调用重试机制（get_LLM_reply）</div>
+      <ul class="flow-list">
+        <li>retry_cnt = 3，失败后 sleep 10s 再重试</li>
+        <li>仅用于老版直接调用路径；unified_llm_call 不含重试（由上层 execute_complete_program 管理）</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<div class="big-arrow">⬇</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 1: 消息输入 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-conversation">
+  <div class="stage-header open" onclick="toggle(this)">
+    <div class="stage-num">1</div>
+    <div class="stage-title">用户消息输入 · handle_text_input()</div>
+    <div class="stage-tag">状态机门控</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body open">
+    <p class="desc">所有用户文本输入的统一入口，先做状态检查再路由。</p>
+
+    <div class="section">
+      <div class="section-title">状态机当前状态检查</div>
+      <div class="info-grid">
+        <div class="info-card">
+          <div class="card-title">阻塞状态（直接拒绝）</div>
+          <span class="pill pill-red">ANALYZING</span>
+          <span class="pill pill-red">EXECUTING</span>
+          <br><br>
+          <div style="font-size:0.82rem;color:#7a8399">回复："正在处理中，请稍候..."</div>
+        </div>
+        <div class="info-card">
+          <div class="card-title">可处理状态（走对话循环）</div>
+          <span class="pill pill-blue">IDLE</span>
+          <span class="pill pill-blue">PLAN_READY</span>
+          <span class="pill pill-blue">RESULT_READY</span>
+          <span class="pill pill-blue">CONVERSING</span>
+          <br><br>
+          <div style="font-size:0.82rem;color:#7a8399">IDLE + 有旧上下文 → 先 soft_reset，再进入对话循环</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">soft_reset 做了什么</div>
+      <ul class="flow-list">
+        <li>扫描历史 messages，提取含偏好关键词（单位/坐标系/输出路径/总是/记住…）的用户消息</li>
+        <li>清空 messages / plan / code / results / data_overview</li>
+        <li>把提取的偏好注入新会话开头：<code>system: "=== User Preferences ==="</code></li>
+      </ul>
+    </div>
+
+    <hr class="divider">
+    <div class="transfer">
+      <div class="transfer-arrow">→</div>
+      <div>
+        <div class="transfer-label">传入下一环节</div>
+        <div class="transfer-content">原始 message 字符串 → <b>_run_conversation_loop(message)</b></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="big-arrow">⬇</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 2: 对话循环 / OutputParser / GuardGate -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-routing">
+  <div class="stage-header open" onclick="toggle(this)">
+    <div class="stage-num">2</div>
+    <div class="stage-title">对话循环 · OutputParser · GuardGate</div>
+    <div class="stage-tag">分类 & 路由</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body open">
+    <p class="desc">Phase 5 核心机制：不做意图预分类，所有消息直接喂给 LLM，由 LLM 输出格式决定后续路由。</p>
+
+    <div class="section">
+      <div class="section-title">Prompt 构成（conversation 步骤）</div>
+
+      <div class="prompt-box">
+        <div class="label">System Message（静态部分 — 可命中 Prompt Cache）</div>
+        <div class="arch">【架构提示词】CONVERSATION_SYSTEM_PROMPT（Constants.py）</div>
+        <div style="margin-top:8px;font-size:0.8rem;color:#7a8399">定义 5 种响应 Mode：<br>
+        Mode 1: TASK_SUMMARY（任务摘要+请求确认）<br>
+        Mode 2: [TASK_CONFIRMED]（确认触发分析）<br>
+        Mode 3: CLARIFYING_QUESTION（反问缺失信息）<br>
+        Mode 4: CONVERSATIONAL_REPLY（普通对话）<br>
+        Mode 5: [KNOWLEDGE_UPDATE]（建议写入知识库）</div>
+        <hr style="border-color:#1e3a5f;margin:8px 0">
+        <div class="arch">【架构提示词】General GIS/QGIS Rules（SessionContext._get_general_rules）</div>
+        <div style="margin-top:4px;font-size:0.78rem;color:#7a8399">
+        · 始终用 processing.run() · from qgis.core import * · 用绝对路径 · 验证图层有效性
+        </div>
+        <hr style="border-color:#1e3a5f;margin:8px 0">
+        <div class="injected">【知识注入】Project Knowledge（knowledge_manager.get_relevant_knowledge）</div>
+        <div style="font-size:0.78rem;color:#7a8399">根据当前图层名 + 任务描述检索知识库，max 6000字符</div>
+      </div>
+
+      <div class="prompt-box" style="margin-top:8px">
+        <div class="label">System Message（动态部分 — "---CONTEXT---" 分隔后）</div>
+        <div class="injected">【动态注入】=== Loaded Data ===（当前 QGIS 图层列表，每次对话前本地刷新）</div>
+        <div style="margin-top:4px" class="injected">【动态注入】=== Current Plan ===（若存在 current_plan）</div>
+        <div style="margin-top:4px" class="injected">【动态注入】=== Recent Execution Results ===（最近3条执行结果）</div>
+      </div>
+
+      <div class="prompt-box" style="margin-top:8px">
+        <div class="label">History（压缩后的对话历史）</div>
+        <div style="font-size:0.82rem;color:#b0b8d0">
+        · 第一条消息（原始任务）始终保留<br>
+        · 中间消息：[Plan] 删除 / [Result] 保留 / [Executed code] → "[Code was executed]" / 普通消息截断到200字<br>
+        · 最近6条完整保留
+        </div>
+      </div>
+
+      <div class="prompt-box" style="margin-top:8px">
+        <div class="label">User Message</div>
+        <div class="field">用户当前输入的原始消息</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">OutputParser 分类规则（纯正则/启发式，不依赖 LLM 打标签）</div>
+      <div class="info-grid">
+        <div class="info-card">
+          <div class="card-title">CODE</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">含 <code>```python</code> 代码块</div>
+        </div>
+        <div class="info-card">
+          <div class="card-title">PLAN</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">含 <code>{"steps": [...]}</code> JSON 结构</div>
+        </div>
+        <div class="info-card">
+          <div class="card-title">GIS_TASK_READY</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">含 <code>[TASK_CONFIRMED]</code> 标签</div>
+        </div>
+        <div class="info-card">
+          <div class="card-title">KNOWLEDGE_UPDATE</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">含 <code>[KNOWLEDGE_UPDATE]</code> 标签</div>
+        </div>
+        <div class="info-card">
+          <div class="card-title">QUESTION</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">含问号 / 疑问词 / 反问特征</div>
+        </div>
+        <div class="info-card">
+          <div class="card-title">CHAT</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">以上都不匹配，默认类型</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">GuardGate 路由决策</div>
+      <ul class="flow-list">
+        <li><b>CODE</b> → action: show_code → 代码发到 CodeEditor，聊天框显示提示</li>
+        <li><b>PLAN</b> → action: confirm_plan → 格式化展示 plan，状态机进入 PLAN_READY，等待用户确认</li>
+        <li><b>GIS_TASK_READY</b> → action: trigger_analysis → 提取 refined_task，触发完整分析管线</li>
+        <li><b>KNOWLEDGE_UPDATE</b> → action: confirm_knowledge → 请求用户确认后写入知识库</li>
+        <li><b>QUESTION / CHAT</b> → action: show_message → 直接显示到聊天框</li>
+      </ul>
+    </div>
+
+    <div class="note">
+      <b>反问确认流程：</b>LLM 输出 Mode 3（CLARIFYING_QUESTION）时，OutputParser 识别为 QUESTION，GuardGate 路由到 show_message + is_question=True，回显到聊天框等待用户补充。用户补充后重新进入对话循环，LLM 收到完整信息后输出 Mode 1（任务摘要），再次等待确认后输出 Mode 2（[TASK_CONFIRMED]）。
+    </div>
+
+    <hr class="divider">
+    <div class="transfer">
+      <div class="transfer-arrow">→</div>
+      <div>
+        <div class="transfer-label">GIS_TASK_READY 路径传入分析管线</div>
+        <div class="transfer-content">
+          <b>refined_task</b>（[TASK_CONFIRMED] 之后的精炼任务描述字符串）<br>
+          → 触发 <b>_run_analysis(refined_task)</b>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="big-arrow">⬇</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 3: 知识库写入 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-knowledge">
+  <div class="stage-header" onclick="toggle(this)">
+    <div class="stage-num">★</div>
+    <div class="stage-title">知识库 · KnowledgeManager（旁路流程）</div>
+    <div class="stage-tag">持久化知识</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body">
+    <p class="desc">不在主管线上，由 KNOWLEDGE_UPDATE 分支或用户确认后触发。知识会在之后所有步骤的 system message 中注入。</p>
+
+    <div class="section">
+      <div class="section-title">写入触发条件</div>
+      <ul class="flow-list">
+        <li>LLM 在对话中输出 <code>[KNOWLEDGE_UPDATE]</code> 标签</li>
+        <li>GuardGate → action: confirm_knowledge → UI 弹出确认</li>
+        <li>用户确认后调用 <code>knowledge_manager.add_entry(suggestion)</code></li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="section-title">读取时机（每次 build_messages 调用时）</div>
+      <div class="code">knowledge_manager.get_relevant_knowledge(
+  layer_names=self._layer_names,  # 当前图层名列表
+  query=self.current_task,        # 用户原始任务
+  max_chars=6000
+)</div>
+      <div style="font-size:0.82rem;color:#7a8399;margin-top:6px">注入位置：system message 静态部分的 "=== Project Knowledge ===" 块</div>
+    </div>
+    <div class="note">知识注入存在于：conversation / query_tuning / tool_selection / code_generation / code_review / debug 所有步骤的 system message 中。</div>
+  </div>
+</div>
+
+<div class="big-arrow">⬇</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 4: 分析管线入口 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-analysis">
+  <div class="stage-header open" onclick="toggle(this)">
+    <div class="stage-num">3</div>
+    <div class="stage-title">步骤 1-2 · 任务名 + 数据概览 + Query Tuning</div>
+    <div class="stage-tag">分析管线入口</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body open">
+
+    <div class="section">
+      <div class="section-title">步骤 1：生成任务名（generate_task_name）</div>
+      <div class="prompt-box">
+        <div class="label">Prompt（简单单次调用，不走 SessionContext）</div>
+        <div class="field">refined_task 字符串</div>
+        <div style="margin-top:4px;font-size:0.8rem;color:#7a8399">→ 输出：简短的任务名（用于文件命名）</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">步骤 2：数据概览（本地读取，无 LLM 调用）</div>
+      <ul class="flow-list">
+        <li>读取 data_path 下所有图层的元数据：文件名、字段列表、CRS、要素数量、geometry 类型</li>
+        <li>存入 <code>SessionContext.data_overview</code>，格式化为带序号的字符串</li>
+        <li>提取图层名 → <code>_layer_names</code> 用于知识库检索</li>
+        <li>每次对话前也会刷新（<code>_refresh_data_overview_local</code>）</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="section-title">步骤 3：Query Tuning（build_query_tuning_instruction）</div>
+      <p class="desc">将用户的精炼任务描述转换为标准化的 GIS 技术描述（task_breakdown）。</p>
+
+      <div class="prompt-box">
+        <div class="label">System Message</div>
+        <div class="arch">【架构提示词】Query_tuning_role：GIS 专家角色定义</div>
+        <div class="injected" style="margin-top:4px">【知识注入】Project Knowledge</div>
+        <div class="injected">【动态注入】=== Loaded Data ===（data_overview）</div>
+      </div>
+
+      <div class="prompt-box" style="margin-top:8px">
+        <div class="label">User Message（build_query_tuning_instruction 构建）</div>
+        <div class="arch">【架构提示词】Query_tuning_prefix（Think step-by-step...）</div>
+        <div style="margin-top:6px">
+        REQUIREMENTS:（Query_tuning_requirement 列表，10条）<br>
+        <span style="font-size:0.78rem;color:#7a8399">
+        · 不提软件名 · 只做空间分析 · 用技术术语 · 从数据概览选图层字段 · 只在必要时重投影…
+        </span>
+        </div>
+        <div style="margin-top:6px">INSTRUCTIONS:（Chain-of-thought 5步）</div>
+        <div class="field" style="margin-top:6px">User Query: "{refined_task}"</div>
+        <div class="injected" style="margin-top:4px">Output Sample:（固定示例）</div>
+      </div>
+    </div>
+
+    <hr class="divider">
+    <div class="transfer">
+      <div class="transfer-arrow">→</div>
+      <div>
+        <div class="transfer-label">传入下一环节</div>
+        <div class="transfer-content">
+          <b>task_breakdown</b>（标准化 GIS 任务描述，带操作步骤标签）<br>
+          <b>data_overview</b>（图层元数据列表）
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="big-arrow">⬇</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 5: Embedding 检索 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-embedding">
+  <div class="stage-header open" onclick="toggle(this)">
+    <div class="stage-num">4</div>
+    <div class="stage-title">步骤 3.5 · Embedding 候选工具检索</div>
+    <div class="stage-tag">语义检索</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body open">
+    <p class="desc">用 task_breakdown 在本地向量索引中检索语义最相关的工具候选，无 LLM 调用，纯本地计算。</p>
+
+    <div class="section">
+      <div class="section-title">索引构成（启动时一次性构建）</div>
+      <div class="info-grid">
+        <div class="info-card">
+          <div class="card-title">TOML 文件工具（高质量）</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">
+          来源：Tools_Documentation/QGIS_Tools/*.toml<br>
+          embed 文本：<code>tool_name + ". " + brief_description</code>（截断到500字）
+          </div>
+        </div>
+        <div class="info-card">
+          <div class="card-title">Registry 补充工具（低质量）</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">
+          来源：qgis340_tools.json（无 TOML 的工具）<br>
+          embed 文本：只有 tool_name，无描述
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">检索引擎（优先级）</div>
+      <div class="info-grid">
+        <div class="info-card">
+          <div class="card-title">主路径：ONNX（语义相似度）</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">
+          模型：all-MiniLM-L6-v2（384维，本地CPU）<br>
+          query → 384维向量 → 矩阵点积（cosine，已L2归一化）→ argsort top-20<br>
+          <b>语义匹配</b>：buffer ≈ zone of influence ≈ surrounding area
+          </div>
+        </div>
+        <div class="info-card">
+          <div class="card-title">备选路径：TF-IDF（关键词匹配）</div>
+          <div style="font-size:0.82rem;color:#b0b8d0">
+          无 onnxruntime/tokenizers 时自动降级<br>
+          sparse cosine similarity，只能匹配共现词<br>
+          <b>关键词匹配</b>：必须词面重叠
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">TOOL_WHITELIST（固定常用工具，始终带入）</div>
+      <div style="font-size:0.82rem;color:#b0b8d0;margin-bottom:8px">不参与排名，直接合并进候选列表排在前面。覆盖高频 GIS 操作：</div>
+      <span class="pill pill-purple">reprojectlayer</span>
+      <span class="pill pill-purple">buffer</span>
+      <span class="pill pill-purple">clip</span>
+      <span class="pill pill-purple">intersection</span>
+      <span class="pill pill-purple">dissolve</span>
+      <span class="pill pill-purple">joinattributesbylocation</span>
+      <span class="pill pill-purple">extractbyattribute</span>
+      <span class="pill pill-purple">fieldcalculator</span>
+      <span class="pill pill-purple">zonalstatisticsfb</span>
+      <span class="pill pill-purple">rastercalc</span>
+      <span class="pill pill-purple">… 共约40个</span>
+    </div>
+
+    <div class="note">top-20 无分数阈值过滤，低相似度工具也会进入候选。最终由下一步 LLM 工具选择过滤。</div>
+
+    <hr class="divider">
+    <div class="transfer">
+      <div class="transfer-arrow">→</div>
+      <div>
+        <div class="transfer-label">传入下一环节</div>
+        <div class="transfer-content">
+          <b>candidate_tools_str</b>：whitelist工具 + top-20检索工具，格式化为 "- ToolName (ID: xxx): desc" 列表
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="big-arrow">⬇</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 6: 工具选择 / Plan生成 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-toolsel">
+  <div class="stage-header open" onclick="toggle(this)">
+    <div class="stage-num">5</div>
+    <div class="stage-title">步骤 4 · LLM 工具选择 + 结构化 Plan 生成</div>
+    <div class="stage-tag">核心规划</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body open">
+    <p class="desc">LLM 从候选工具列表中自主选择工具，输出结构化 JSON 执行计划。这是整个管线中唯一由 LLM 做规划决策的步骤。</p>
+
+    <div class="section">
+      <div class="section-title">Prompt 构成（build_tool_selection_instruction）</div>
+
+      <div class="prompt-box">
+        <div class="label">System Message</div>
+        <div class="arch">【架构提示词】ToolSelect_role：20年经验GIS专家 + QGIS Processing专家</div>
+        <div class="injected" style="margin-top:4px">【知识注入】Project Knowledge</div>
+        <div class="injected">【动态注入】=== Loaded Data ===（data_overview）</div>
+        <div class="arch" style="margin-top:4px">【架构提示词】General GIS/QGIS Rules</div>
+      </div>
+
+      <div class="prompt-box" style="margin-top:8px">
+        <div class="label">User Message（build_tool_selection_instruction 构建）</div>
+        <div class="arch">【架构提示词】ToolSelect_prefix</div>
+        <div class="field" style="margin-top:6px">Task breakdown: {task_breakdown}</div>
+        <div style="margin-top:6px">Requirements:（ToolSelect_requirements 列表）<br>
+        <span style="font-size:0.78rem;color:#7a8399">
+        · 可用 geopandas/numpy/scipy · 不造假工具 · 主题图用自定义工具 · rastercalc ID 纠正 · 只在必要时重投影…
+        </span>
+        </div>
+        <div class="injected" style="margin-top:6px">【检索注入】Available tools:<br>{candidate_tools_str}（whitelist + top-20 embedding结果）</div>
+        <div style="margin-top:6px;color:#94a3b8">逃生口：If none suitable → "NEED_TOOL: &lt;description&gt;"（当前未实现二次检索）</div>
+        <div class="arch" style="margin-top:6px">【架构提示词】structured_tool_selection_output_format（JSON格式规范）</div>
+        <div class="arch">【架构提示词】structured_tool_selection_example_simple / _complex（示例）</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Plan 输出格式（结构化 JSON）</div>
+      <div class="code">{
+  "task_name": "buffer_analysis",
+  "steps": [
+    {
+      "step_number": 1,
+      "operation": "Buffer roads layer",
+      "tool_id": "native:buffer",
+      "input_layer": "roads.shp",
+      "key_parameters": { "DISTANCE": 500, "SEGMENTS": 5 },
+      "output_description": "Buffered roads polygon"
+    },
+    ...
+  ]
+}</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">OutputParser 验证 + GuardGate 路由</div>
+      <ul class="flow-list">
+        <li>OutputParser 检测到 <code>{"steps": [...]}</code> → 类型 PLAN</li>
+        <li>GuardGate → action: confirm_plan</li>
+        <li>格式化为人类可读的 "=== Execution Plan ===" 文本，发到聊天框</li>
+        <li>状态机 → PLAN_READY，等待用户确认</li>
+        <li>解析失败（回退路径）→ 旧格式 <code>{"Selected tool": [...]}</code> dict</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="section-title">步骤 5：文档检索（_retrieve_tool_docs）</div>
+      <ul class="flow-list">
+        <li>从 Plan 中提取所有 tool_id → <code>selected_tool_IDs_list</code></li>
+        <li>在 Tools_Documentation 目录查找对应 TOML 文件</li>
+        <li>读取完整 TOML（含参数说明 + 代码示例）→ 拼接为 <code>combined_documentation_str</code></li>
+        <li>更新 SessionContext.current_plan（含 task_breakdown / selected_tools / tool_IDs）</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="section-title">步骤 6：工作流图生成（可选）</div>
+      <ul class="flow-list">
+        <li>LLM 生成 NetworkX DAG 描述代码 → exec 构建图对象</li>
+        <li>保存为 GraphML + HTML 可视化文件</li>
+        <li>图节点：operation 节点 + data 节点交替出现</li>
+      </ul>
+    </div>
+
+    <hr class="divider">
+    <div class="transfer">
+      <div class="transfer-arrow">→</div>
+      <div>
+        <div class="transfer-label">用户确认 Plan 后传入代码生成</div>
+        <div class="transfer-content">
+          <b>structured_plan</b>（JSON）<br>
+          <b>task_breakdown</b>（标准化任务描述）<br>
+          <b>selected_tool_IDs_list</b>（工具ID列表）<br>
+          <b>combined_documentation_str</b>（所选工具完整TOML文档）<br>
+          <b>data_overview</b>（图层元数据）
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="big-arrow">⬇</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 7: 代码生成 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-codegen">
+  <div class="stage-header open" onclick="toggle(this)">
+    <div class="stage-num">6</div>
+    <div class="stage-title">步骤 7a · 代码生成</div>
+    <div class="stage-tag">代码合成</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body open">
+
+    <div class="section">
+      <div class="section-title">Prompt 构成（build_code_generation_instruction）</div>
+
+      <div class="prompt-box">
+        <div class="label">System Message</div>
+        <div class="arch">【架构提示词】operation_role：GIS专家 + QGIS Python专家</div>
+        <div class="injected" style="margin-top:4px">【知识注入】Project Knowledge</div>
+        <div class="injected">【动态注入】=== Loaded Data ===（data_overview）</div>
+        <div class="injected">【动态注入】=== Current Plan ===（structured_plan JSON）← 关键注入</div>
+        <div class="arch" style="margin-top:4px">【架构提示词】General GIS/QGIS Rules</div>
+      </div>
+
+      <div class="prompt-box" style="margin-top:8px">
+        <div class="label">User Message（build_code_generation_instruction 构建）</div>
+        <div class="arch">【架构提示词】operation_task_prefix</div>
+        <div class="field" style="margin-top:6px">Task description: {task_breakdown}</div>
+        <div class="field">Data properties: {data_path}（带序号的图层信息）</div>
+        <div class="field">Selected tool(s): {selected_tool_IDs_list}</div>
+        <div class="injected" style="margin-top:4px">Tool documentation: {combined_documentation_str}（工具TOML完整内容，含参数规范+代码示例）</div>
+        <div style="margin-top:6px">Requirements:（operation_requirement，约30条）</div>
+        <div style="font-size:0.78rem;color:#7a8399;margin-top:4px">
+        · 用 processing.run() · QgsVectorLayer 加载结果 · 不包含 QGIS 初始化代码<br>
+        · 代码包在函数里，末行调用函数 · 输出保存到工作区（非临时路径）<br>
+        · 文件名重复时追加序号 · shapefile 字段名最长10字符<br>
+        · QColor 从 PyQt5.QtGui 导入 · QVariant 从 PyQt5.QtCore 导入<br>
+        · 多步任务步骤间加等待 · 不要 validity check / 不抛异常<br>
+        · 问答型任务只打印结果不加载图层 · rastercalc 正确ID<br>
+        · gdal:* 工具 INPUT 必须是 Layer 对象不是路径字符串
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">代码提取</div>
+      <ul class="flow-list">
+        <li>OutputParser 识别为 CODE 类型 → <code>action.data["code"]</code></li>
+        <li>回退：用正则 <code>```python...(.*?)```</code> 从原始回复提取</li>
+        <li>提取失败时返回空字符串（潜在漏洞）</li>
+      </ul>
+    </div>
+
+    <hr class="divider">
+    <div class="transfer">
+      <div class="transfer-arrow">→</div>
+      <div>
+        <div class="transfer-label">传入代码审查</div>
+        <div class="transfer-content">
+          <b>extracted_code</b>（完整 Python 代码字符串）
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="big-arrow">⬇</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 8: 代码审查 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-review">
+  <div class="stage-header open" onclick="toggle(this)">
+    <div class="stage-num">7</div>
+    <div class="stage-title">步骤 7b · 代码审查（is_review 开关控制）</div>
+    <div class="stage-tag">质量把控</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body open">
+    <p class="desc">is_review=False 时跳过此步，extracted_code 直接作为 final_code。is_review=True 时 LLM 对照 Plan + 文档 + 数据重新检查代码并修正。</p>
+
+    <div class="section">
+      <div class="section-title">Prompt 构成（build_code_review_instruction）</div>
+
+      <div class="prompt-box">
+        <div class="label">System Message</div>
+        <div class="arch">【架构提示词】operation_code_review_role：20年GIS+代码审查专家</div>
+        <div class="injected" style="margin-top:4px">【知识注入】Project Knowledge</div>
+        <div class="injected">【动态注入】=== Current Plan ===（structured_plan JSON）← LLM对照Plan检查</div>
+        <div style="margin-top:4px;font-size:0.78rem;color:#7a8399">注意：data_overview 不注入 system（step="code_review"），已在 step_instruction 里</div>
+      </div>
+
+      <div class="prompt-box" style="margin-top:8px">
+        <div class="label">User Message（build_code_review_instruction 构建）</div>
+        <div class="arch">【架构提示词】operation_code_review_task_prefix（审查任务定义）</div>
+        <div class="field" style="margin-top:6px">The code to review: {extracted_code}（待审查代码）</div>
+        <div class="field">Data properties: {data_path}（带序号图层信息）</div>
+        <div class="field">Selected tool(s): {selected_tool_IDs_list}</div>
+        <div class="injected" style="margin-top:4px">Tool documentation: {combined_documentation_str}</div>
+        <div style="margin-top:6px">Requirements:（operation_code_review_requirement，约18条）</div>
+        <div style="font-size:0.78rem;color:#7a8399;margin-top:4px">
+        · 验证代码是否实现了 Plan 中的每一步（顺序正确）<br>
+        · 验证工具ID是否与 Plan 一致<br>
+        · 验证字段名是否真实存在于数据中（shapefile 10字符限制）<br>
+        · CRS 处理：只在 Plan 或数据显示CRS不匹配时才重投影<br>
+        · gdal:* 工具 INPUT 必须是 Layer 对象<br>
+        · 输出保存到工作区目录（非临时路径）<br>
+        · 文件名重复追加序号 · 多步任务加延迟<br>
+        · 代码包在函数里 · 不包含QGIS初始化
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">审查结果处理</div>
+      <ul class="flow-list">
+        <li>OutputParser 识别为 CODE → 用 reviewed_code 替换</li>
+        <li>非 CODE（LLM只返回说明文字）→ 回退 extract_code_from_str → 可能返回空</li>
+        <li>final_code = reviewed_code（不对比差异，不记录改了什么）</li>
+      </ul>
+      <div class="note-red" style="margin-top:8px">注意：LLM 认为代码无误时可能不包含代码块，OutputParser 识别为 CHAT，fallback 提取可能静默返回空字符串。</div>
+    </div>
+
+    <hr class="divider">
+    <div class="transfer">
+      <div class="transfer-arrow">→</div>
+      <div>
+        <div class="transfer-label">传入执行环节</div>
+        <div class="transfer-content">
+          <b>final_code</b>（审查后的最终代码）<br>
+          <b>combined_documentation_str</b>（继续用于调试阶段的文档参考）
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="big-arrow">⬇</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- STAGE 9: 执行 + 调试 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div class="stage c-exec">
+  <div class="stage-header open" onclick="toggle(this)">
+    <div class="stage-num">8</div>
+    <div class="stage-title">步骤 7c · 代码执行 + 自动调试（2轮）+ Post-Debug Review</div>
+    <div class="stage-tag">执行层</div>
+    <div class="chevron">▶</div>
+  </div>
+  <div class="stage-body open">
+
+    <div class="section">
+      <div class="section-title">执行循环（execute_complete_program，try_cnt=2）</div>
+      <div class="code">while count &lt; 2:
+    try:
+        compile(code, 'Complete program', 'exec')
+        exec(compiled_code, globals())   # stdout 重定向到 StringIO
+        return code, user_output, []     # 成功 → 直接退出
+    except Exception as err:
+        # 记录 error_collector: attempt/code_snapshot/error_message/traceback
+        if count == 2: return code, output, error_collector  # 最终失败
+        # AI 调试 → 生成新代码 → 下轮执行</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">AI 调试 Prompt（每次失败后，非最后一轮）</div>
+      <div class="prompt-box">
+        <div class="label">System Message（新模式：SessionContext）</div>
+        <div class="arch">【架构提示词】debug_role：具备 SmartDebugger 能力的GIS专家</div>
+        <div class="injected" style="margin-top:4px">【知识注入】Project Knowledge</div>
+        <div class="injected">【动态注入】=== Current Plan ===</div>
+        <div class="injected">【动态注入】=== Recent Execution Results ===（最近3条）</div>
+      </div>
+      <div class="prompt-box" style="margin-top:8px">
+        <div class="label">User Message（build_debug_instruction 构建）</div>
+        <div class="arch">【架构提示词】debug_task_prefix（修正代码并返回完整修正版）</div>
+        <div class="field" style="margin-top:6px">Error message: {str(err)}</div>
+        <div class="field">Failed code: {完整代码块}</div>
+        <div class="injected" style="margin-top:4px">Tool documentation: {documentation_str}</div>
+        <div style="margin-top:6px">Requirements:（get_smart_debug_requirements 动态生成）</div>
+        <div style="font-size:0.78rem;color:#7a8399;margin-top:4px">
+        基础要求（固定）：<br>
+        · 分析错误模式 · 返回完整代码块 · 可用 geopandas/numpy 等<br>
+        · shapefile字段名≤10字符 · 不用临时图层作输出<br>
+        Smart Debug 建议（动态，来自 SmartDebugger 历史错误模式匹配）：<br>
+        · 根据当前错误类型从历史学习库中推断最可能的修复建议
+        </div>
+      </div>
+      <div class="note" style="margin-top:8px">API调用失败：continue（用原代码重跑，不消耗调试次数）</div>
+    </div>
+
+    <hr class="divider">
+
+    <div class="section">
+      <div class="section-title">Post-Debug Review（2次全失败 + is_review=True）<span class="badge badge-new">新增</span></div>
+      <p class="desc">2轮调试仍失败后，把最终失败代码再过一次 Code Review，然后执行1次（try_cnt=1，不再调试）。</p>
+      <ul class="flow-list">
+        <li>Prompt 与步骤 7b 完全相同（build_code_review_instruction）</li>
+        <li>is_review=False 时跳过，直接进入 result_ready</li>
+        <li>final run：try_cnt=1，review=False，无调试</li>
+      </ul>
+    </div>
+
+    <div class="section">
+      <div class="section-title">执行成功判定</div>
+      <div class="code">execution_success = (
+    code is not None and len(code.strip()) > 0
+    and (len(error_collector) == 0 or output)
+)</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">结果写入 SessionContext</div>
+      <ul class="flow-list">
+        <li><code>session.add_executed_code(final_code)</code> → messages 中记录 [Executed code]</li>
+        <li><code>session.add_result(result_str)</code> → messages 中记录 [Result]（含 Status/Output/Error）</li>
+        <li>状态机 → RESULT_READY，emit result_ready 信号</li>
+      </ul>
+    </div>
+
+    <hr class="divider">
+    <div class="transfer">
+      <div class="transfer-arrow">→</div>
+      <div>
+        <div class="transfer-label">最终输出</div>
+        <div class="transfer-content">
+          <b>result_info</b>：{ code, success, output, error_message, error_collector }<br>
+          → GUI 展示结果，状态机进入 RESULT_READY 等待用户反馈
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════════════ -->
+<!-- 完整流程总览 -->
+<!-- ═══════════════════════════════════════════════════════════ -->
+<div style="margin-top:32px;background:#1a1d2e;border:1px solid #2a2d3e;border-radius:12px;padding:24px 28px;">
+  <div style="font-size:0.78rem;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:#555;margin-bottom:16px">完整数据流总览</div>
+  <div class="code" style="color:#d0d8f0;line-height:1.9">用户输入 message
+  │
+  ├─ [阻塞状态] → 拒绝
+  │
+  └─ soft_reset（如需）
+       │
+       ▼
+  对话循环 LLM 调用
+  System: CONVERSATION_SYSTEM_PROMPT + GIS Rules + 知识库 + 数据概览 + Plan + 结果
+  User:   message
+       │
+       ├─ CHAT/QUESTION    → 直接回复，循环等待
+       ├─ KNOWLEDGE_UPDATE → 请求用户确认 → 写入知识库
+       ├─ PLAN             → PLAN_READY，等待确认
+       │
+       └─ GIS_TASK_READY（[TASK_CONFIRMED]）
+            │ refined_task
+            ▼
+       步骤1: generate_task_name(refined_task) → task_name
+            │
+            ▼
+       步骤2: 本地读取数据概览 → data_overview（图层元数据）
+            │
+            ▼
+       步骤3: Query Tuning LLM
+       System: QueryTuning_role + GIS Rules + 知识库 + data_overview
+       User:   QueryTuning_instruction(refined_task)
+            │ task_breakdown（标准化GIS任务描述）
+            ▼
+       步骤3.5: Embedding检索（本地，无LLM）
+       输入: task_breakdown
+       → ONNX cosine similarity top-20 + TOOL_WHITELIST
+            │ candidate_tools_str
+            ▼
+       步骤4: Tool Selection LLM
+       System: ToolSelect_role + GIS Rules + 知识库 + data_overview
+       User:   ToolSelect_instruction(task_breakdown, candidate_tools_str)
+            │ structured_plan JSON + selected_tool_IDs_list
+            ▼
+       步骤5: 文档检索（本地）
+       → 读取 TOML 文件 → combined_documentation_str
+       → SessionContext.set_plan(plan JSON)
+            │ combined_documentation_str
+            ▼
+       步骤7a: 代码生成 LLM
+       System: operation_role + GIS Rules + 知识库 + data_overview + current_plan
+       User:   CodeGen_instruction(task_breakdown, data, tools, docs)
+            │ extracted_code
+            ▼
+       步骤7b: [is_review=True] Code Review LLM
+       System: review_role + GIS Rules + 知识库 + current_plan（data_overview不注入）
+       User:   CodeReview_instruction(extracted_code, data, tools, docs)
+            │ final_code
+            ▼
+       步骤7c: 执行循环（try_cnt=2）
+       ┌─────────────────────────────────────┐
+       │ exec(final_code)                    │
+       │  ├─ 成功 → return                  │
+       │  └─ 失败 → AI调试LLM              │
+       │     System: debug_role + plan +结果 │
+       │     User: debug_instruction(code,err,docs) │
+       │     → new code → 再执行            │
+       └─────────────────────────────────────┘
+            │
+            ├─ [成功] → result_ready
+            │
+            └─ [2次全失败 + is_review=True]
+                 ▼
+            Post-Debug Review LLM（同步骤7b）
+                 │ reviewed_code
+                 ▼
+            最终执行一次（try_cnt=1）
+                 │
+                 ▼
+            result_ready → RESULT_READY 状态</div>
+</div>
+
+</div><!-- /pipeline -->
+
+<script>
+function toggle(header) {
+  header.classList.toggle('open');
+  const body = header.nextElementSibling;
+  body.classList.toggle('open');
+}
+// open all on load (already set in HTML), just ensure chevrons match
+document.querySelectorAll('.stage-header.open').forEach(h => {
+  h.nextElementSibling.classList.add('open');
+});
+</script>
+</body>
+</html>

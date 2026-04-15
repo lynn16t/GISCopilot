@@ -683,15 +683,18 @@ def execute_complete_program(request_id, code: str, try_cnt: int, task: str, mod
 
             exec(compiled_code, globals())  # pass only globals()
 
-            # Display the successfully executed code
+            # Capture only user output (from exec), before appending meta info
+            user_output = output_capture.getvalue()
+
+            # Display the successfully executed code (goes to output_capture but
+            # we already saved user_output above, so it won't be duplicated)
             print("\nSuccessfully executed code:")
             print("```python")
             print(code)
             print("```")
-
-            # Ensure that generated_output is returned or printed
             print(f"\n\n--------------- Done ---------------\n\n")
-            return code, output_capture.getvalue(), error_collector
+
+            return code, user_output, error_collector
 
         except Exception as err:
             exec_error = err

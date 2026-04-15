@@ -483,8 +483,8 @@ class ModelProviderFactory:
             provider_name = cls._model_providers[model]
             if provider_name in cls._providers:
                 return cls._providers[provider_name]
-        # 再查动态设置的 active_provider
-        if cls._active_provider:
+        # 再查动态设置的 active_provider（detect_provider 检测结果）
+        if cls._active_provider and cls._active_provider in cls._providers:
             return cls._providers[cls._active_provider]
         return cls._providers['openai']
 
@@ -516,44 +516,90 @@ def detect_provider(api_key: str) -> dict:
     return result
 
 def load_model_config():
-    """Load configuration for all model providers"""
+    """Load configuration for all model providers.
+
+    根据 API Key 前缀快速识别实际 provider，将 key 分配给正确的
+    provider config，避免把 DeepSeek key 发到 OpenAI 等错误路由。
+    注意：不做网络请求，仅靠前缀判断。
+    """
     config = configparser.ConfigParser()
     config_path = os.path.join(current_script_dir, 'config.ini')
     config.read(config_path)
-    
+
     model_config = {}
-    
+
     # 读取统一的 API Key
     api_key = ''
     if 'API_Key' in config and 'OpenAI_key' in config['API_Key']:
         api_key = config['API_Key']['OpenAI_key']
-    
-    # 所有需要 API Key 的云端厂商共用同一个 key
-    for provider_name in ['openai', 'deepseek', 'gpt5', 'gibd', 'anthropic', 'gemini', 'minimax', 'glm', 'qwen']:
-        if api_key:
-            model_config[provider_name] = {'api_key': api_key}
-    
+
+    if api_key:
+        # 根据前缀快速判断 key 归属（不发网络请求）
+        if api_key.startswith('gibd-services-'):
+            # GIBD 代理 key：可以转发多种模型
+            for pname in ['openai', 'deepseek', 'gpt5', 'gibd',
+                          'anthropic', 'gemini', 'minimax', 'glm', 'qwen']:
+                model_config[pname] = {'api_key': api_key}
+        elif api_key.startswith('sk-ant-'):
+            model_config['anthropic'] = {'api_key': api_key}
+        elif api_key.startswith('eyJ'):
+            model_config['minimax'] = {'api_key': api_key}
+        elif api_key.startswith('AIza'):
+            model_config['gemini'] = {'api_key': api_key}
+        else:
+            # sk- 开头的 key 可能是 OpenAI 或 DeepSeek。
+            # 优先使用 detect_provider 检测结果（active_provider）
+            # 来精确路由，避免把 DeepSeek key 发到 OpenAI。
+            active = ModelProviderFactory._active_provider
+            if active and active != 'unknown':
+                # 检测结果可用，只分配给检测到的 provider
+                model_config[active] = {'api_key': api_key}
+                # 也分配给兼容 provider（如 gpt5 需要同一个 key）
+                if active in ('openai', 'gibd'):
+                    for compat in ['openai', 'gpt5', 'gibd']:
+                        model_config[compat] = {'api_key': api_key}
+                elif active == 'deepseek':
+                    model_config['deepseek'] = {'api_key': api_key}
+            else:
+                # 没有检测结果（可能首次启动、检测未完成、或检测失败）
+                # 分配给所有 OpenAI 兼容 provider，
+                # 由各 Provider.create_client 设置正确的 base_url。
+                for pname in ['openai', 'deepseek', 'gpt5', 'gibd']:
+                    model_config[pname] = {'api_key': api_key}
+
     # Ollama 本地模型，不需要 API Key
     model_config['ollama'] = {
         'base_url': 'http://128.118.54.16:11434/v1',
         'api_key': 'no-api'
     }
-    
+
     return model_config
 
 
 def create_unified_client(model: str):
-    """Create a unified client that can handle multiple providers"""
+    """Create a unified client that can handle multiple providers.
+
+    provider 查找优先级：
+      1. _model_providers 精确映射（deepseek-chat → deepseek）
+      2. _active_provider（detect_provider 检测结果）
+      3. 兜底 'openai'
+    """
     provider = ModelProviderFactory.get_provider(model)
     config = load_model_config()
-    
-    # Get provider-specific config
-    provider_name = ModelProviderFactory._model_providers.get(model, 'openai')
+
+    # Get provider-specific config —— 优先用精确映射，再用 active_provider
+    if model in ModelProviderFactory._model_providers:
+        provider_name = ModelProviderFactory._model_providers[model]
+    elif ModelProviderFactory._active_provider:
+        provider_name = ModelProviderFactory._active_provider
+    else:
+        provider_name = 'openai'
+
     provider_config = config.get(provider_name, {})
-    
+
     if not provider.validate_config(provider_config):
         raise ValueError(f"Invalid configuration for {provider_name} provider")
-    
+
     return provider.create_client(provider_config), provider
 
 

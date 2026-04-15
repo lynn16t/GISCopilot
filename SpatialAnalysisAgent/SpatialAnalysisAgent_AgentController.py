@@ -219,7 +219,7 @@ class AgentController(QObject):
         self.data_path: str = ""
         self.workspace_directory: str = ""
         self.model_name: str = ""
-        self.is_review: bool = True
+        self.is_review: bool = False
         self.reasoning_effort_value: str = "medium"
 
         # 分析阶段产出（暂存，供执行阶段使用）
@@ -230,14 +230,6 @@ class AgentController(QObject):
 
         # 当前运行的工作线程
         self._worker: Optional[AgentWorkerThread] = None
-        
-        from SpatialAnalysisAgent_ToolRetrieval import ToolRetriever
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        self.tool_retriever = ToolRetriever(
-            tools_doc_dir=os.path.join(current_dir, "Tools_Documentation"),
-            tools_json_path=os.path.join(current_dir, "qgis340_tools.json"),
-            model_dir=os.path.join(current_dir, "embedding_model"),
-        )
 
     # ========================
     # 状态管理
@@ -341,6 +333,15 @@ class AgentController(QObject):
         # Phase 5: 所有其他状态统一走对话循环
         print(f"[AgentController] handle_text_input in state {self._state.name}")
 
+        # IDLE 状态 + 已有旧任务上下文 → soft_reset，保留用户偏好但清空旧 plan/code/results
+        if self._state == AgentState.IDLE and (self.session.current_plan or self.session.results):
+            print("[AgentController] IDLE with stale context → soft_reset")
+            self.session.soft_reset()
+
+        # 记录当前任务
+        if not self.session.current_task:
+            self.session.set_task(message)
+
         # 首次输入或数据概览不存在时，先生成 request_id
         if not self._request_id:
             self._generate_request_id()
@@ -382,18 +383,26 @@ class AgentController(QObject):
         处理 IDLE 状态的用户输入。
 
         Phase 5: 简化，不再分类意图，直接走对话循环。
+        先生成数据概览（让 LLM 知道有哪些图层），再进入对话循环。
         """
         self.task = task
 
-        # Phase 3: 重置 SessionContext 并设置任务
-        self.session.reset()
+        # Phase 3: 智能重置 SessionContext（保留用户偏好），设置新任务
+        self.session.soft_reset()
         self.session.set_task(task)
 
         self.status_update.emit("正在理解您的消息...")
         self._generate_request_id()
 
-        # Phase 5: 直接走对话循环
-        self._start_worker(self._run_conversation_loop, task)
+        # Phase 5: 先生成数据概览，再走对话循环
+        self._start_worker(self._run_new_task_with_overview, task)
+
+    def _run_new_task_with_overview(self, task: str):
+        """
+        在 worker 线程中进入对话循环。
+        数据概览由 _run_conversation_loop 内部自动本地刷新，无需提前生成。
+        """
+        self._run_conversation_loop(task)
 
     def _handle_confirm_plan(self):
         """用户确认方案：PLAN_READY → EXECUTING → RESULT_READY"""
@@ -567,18 +576,11 @@ class AgentController(QObject):
             print(f"data overview: {data_overview}")
             print(attributes_json)
         else:
-            # 数据未变，复用缓存
-            cached = self.session.data_overview
-            if cached.startswith('['):
-                try:
-                    data_overview = ast.literal_eval(cached)
-                except Exception:
-                    data_overview = cached.split('\n')
-            else:
-                data_overview = cached.split('\n')
+            # 数据未变，复用缓存（session.data_overview 已是 list）
+            data_overview = self.session.data_overview
             print("Data overview reused from session cache")
 
-        self.data_overview_ready.emit(self.session.data_overview)
+        self.data_overview_ready.emit(self.session.data_overview_str)
 
         if not self._is_running:
             return
@@ -868,10 +870,8 @@ class AgentController(QObject):
 
         # ====== 步骤 7b: 代码审查（可选）======
         if self.is_review:
-            self.status_update.emit("正在审查代码...")
-            print("\n ---- AI IS REVIEWING THE GENERATED CODE ----")
+            self.status_update.emit("Reviewing generated code...")
 
-            # Phase 3: 使用新模式
             step_instruction = helper.build_code_review_instruction(
                 extracted_code=extracted_code,
                 data_path='\n'.join([f"{idx + 1}. {line}" for idx, line in enumerate(data_overview)]),
@@ -885,11 +885,12 @@ class AgentController(QObject):
                 step_role=constants.operation_code_review_role
             )
 
+            # stream=False：审查结果不需要逐 token 输出到下方状态窗口
             review_str = helper.unified_llm_call(
                 request_id=self._request_id,
                 messages=messages,
                 model_name=self.model_name,
-                stream=True,
+                stream=False,
                 reasoning_effort=self.reasoning_effort_value
             )
 
@@ -899,17 +900,10 @@ class AgentController(QObject):
             if review_action.action_type == "show_code":
                 reviewed_code = review_action.data["code"]
             else:
-                # 回退：使用旧的提取逻辑
                 reviewed_code = helper.extract_code_from_str(review_str, task_explanation)
 
-            print("\n\n")
-            print("------------ REVIEWED CODE ------------\n")
-            print("```python")
-            print(reviewed_code)
-            print("```")
-
             final_code = reviewed_code
-            print("OPERATION CODE GENERATED AND REVIEWED SUCCESSFULLY")
+            self.status_update.emit("Code review completed.")
         else:
             final_code = extracted_code
 
@@ -931,7 +925,7 @@ class AgentController(QObject):
         code, output, error_collector = helper.execute_complete_program(
             request_id=self._request_id,
             code=final_code,
-            try_cnt=5,
+            try_cnt=2,
             task=self.task,
             model_name=self.model_name,
             reasoning_effort_value=self.reasoning_effort_value,
@@ -942,6 +936,57 @@ class AgentController(QObject):
             stream=True,
             reasoning_effort=self.reasoning_effort_value,
             session_context=self.session)
+
+        # 2 次调试仍失败 + is_review 开启 → review 失败代码后再跑一次
+        if error_collector and self.is_review:
+            self.status_update.emit("调试未成功，正在对失败代码进行 Review...")
+            print("\n========== POST-DEBUG CODE REVIEW ==========\n")
+
+            review_instruction = helper.build_code_review_instruction(
+                extracted_code=code,
+                data_path='\n'.join([f"{idx + 1}. {line}" for idx, line in enumerate(data_overview)]),
+                selected_tools=', '.join(selected_tool_IDs_list) if selected_tool_IDs_list else 'N/A',
+                documentation_str=combined_documentation_str
+            )
+            review_messages = self.session.build_messages(
+                step="code_review",
+                step_instruction=review_instruction,
+                step_role=constants.operation_code_review_role
+            )
+            review_str = helper.unified_llm_call(
+                request_id=self._request_id,
+                messages=review_messages,
+                model_name=self.model_name,
+                stream=False,
+                reasoning_effort=self.reasoning_effort_value
+            )
+            review_action = self.process_llm_output(review_str)
+            if review_action.action_type == "show_code":
+                reviewed_code = review_action.data["code"]
+            else:
+                reviewed_code = helper.extract_code_from_str(review_str)
+
+            if reviewed_code and reviewed_code.strip():
+                self.status_update.emit("Review 完成，正在执行修复后代码...")
+                print("CODE_READY_URLENCODED:" + urllib.parse.quote(reviewed_code))
+                self.code_ready.emit(reviewed_code)
+                self.session.add_executed_code(reviewed_code)
+
+                # 跑一次，不再继续调试
+                code, output, error_collector = helper.execute_complete_program(
+                    request_id=self._request_id,
+                    code=reviewed_code,
+                    try_cnt=1,
+                    task=self.task,
+                    model_name=self.model_name,
+                    reasoning_effort_value=self.reasoning_effort_value,
+                    documentation_str=combined_documentation_str,
+                    data_path=self.data_path,
+                    workspace_directory=self.workspace_directory,
+                    review=False,
+                    stream=True,
+                    reasoning_effort=self.reasoning_effort_value,
+                    session_context=self.session)
 
         execution_success = (
             code is not None and len(code.strip()) > 0
@@ -965,9 +1010,11 @@ class AgentController(QObject):
         print("CODE_READY_URLENCODED2:" + urllib.parse.quote(generated_code))
         self.code_ready.emit(generated_code)
 
+        # output 现在只包含 exec() 内部的用户 print 输出（不含代码回显）
         if output:
             for line in output.splitlines():
-                print(f"Output: {line}")
+                if line.strip():
+                    print(f"Output: {line}")
 
         # ---- 自动暂停，等用户反馈 ----
         result_info = {
@@ -1118,15 +1165,97 @@ class AgentController(QObject):
 
         return selected_tool_IDs_list, combined_documentation_str
 
+    def _validate_plan_structure(self, plan) -> tuple:
+        """
+        严格校验 plan JSON 是否符合状态机使用的 schema。
+
+        合法 schema:
+            {
+              "steps": [
+                {
+                  "step_number": int/str,
+                  "operation": str,
+                  "tool_id": str (非空),
+                  ...
+                },
+                ...
+              ],
+              ...
+            }
+
+        用于在 _handle_plan_from_conversation 中拒绝格式不对的 LLM 输出，
+        保证进入状态机 PLAN_READY 的 plan 一定能被 _run_execution 消化。
+
+        Returns:
+            (is_valid: bool, error_message: str)
+            合法时返回 (True, "")
+        """
+        if not isinstance(plan, dict):
+            return False, "plan must be a JSON object"
+
+        steps = plan.get("steps")
+        if not isinstance(steps, list):
+            return False, "plan.steps must be a list"
+        if len(steps) == 0:
+            return False, "plan.steps is empty"
+
+        required_fields = ["step_number", "operation", "tool_id"]
+        for idx, step in enumerate(steps):
+            if not isinstance(step, dict):
+                return False, f"steps[{idx}] must be an object"
+            for field in required_fields:
+                if field not in step:
+                    return False, f"steps[{idx}] missing required field: {field}"
+            tool_id = step.get("tool_id")
+            if not isinstance(tool_id, str) or not tool_id.strip():
+                return False, f"steps[{idx}].tool_id must be a non-empty string"
+
+        return True, ""
+
+    def _count_known_tools(self, selected_tools: List[str]) -> tuple:
+        """
+        统计 plan 中有多少工具 ID 是 codebase / constants 已注册的。
+
+        未注册的工具不一定是错（可能是 Python 库如 geopandas/rasterio），
+        所以只做软性记录，不做拒绝。
+
+        Returns:
+            (known_count: int, unknown_tools: list[str])
+        """
+        import SpatialAnalysisAgent_Constants as constants
+        import SpatialAnalysisAgent_Codebase as codebase
+
+        known_count = 0
+        unknown_tools = []
+        for tool in selected_tools:
+            if tool in codebase.algorithm_names or tool in constants.tool_names_lists:
+                known_count += 1
+            else:
+                unknown_tools.append(tool)
+        return known_count, unknown_tools
+
     def _handle_plan_from_conversation(self, action: GuardGate.Action):
         """
         对话循环中检测到 PLAN → 激活状态机的 PLAN_READY。
 
+        设计意图：用户在 PLAN_READY / RESULT_READY / CONVERSING 状态下
+        通过自然语言微调现有 plan（例如"把缓冲区改成 1000 米"），
+        LLM 可以直接输出修改后的 PLAN JSON，避免重跑整条分析流水线
+        （task name → data overview → query tuning → embedding → tool
+        selection → graph）。
+
+        硬约束（杜绝"坏的 LLM"路径）：
+          1. plan 必须通过 _validate_plan_structure 的严格 schema 校验，
+             格式不对直接拒绝，不改变任何状态，只在聊天框警告用户。
+          2. 合法 plan 进入状态机 PLAN_READY，等待用户按 CONFIRM_PLAN 按钮，
+             后续 _run_execution 会沿用状态机的完整代码生成/执行链路。
+
         这里做的事：
-        1. 解析 plan JSON，提取 tool_id 列表
-        2. 检索 TOML 文档
-        3. 保存到 SessionContext
-        4. 发射 plan_ready 信号，进入 PLAN_READY 等待用户确认
+        1. 严格校验 plan JSON schema
+        2. 提取 tool_id 列表，检索 TOML 文档（tool_id 可能变了，必须重新取）
+        3. 合并旧 _analysis_result（保留 task_name / html_graph_path 等元信息）
+        4. 保存到 SessionContext
+        5. 发射 plan_ready 信号，进入 PLAN_READY 等待用户确认
 
         Args:
             action: GuardGate 返回的 Action 对象
@@ -1136,11 +1265,28 @@ class AgentController(QObject):
         structured_plan = action.data["plan"]
         plan_display_text = action.data["plan_text"]
 
-        # 提取工具列表
-        selected_tools = helper.extract_tool_ids_from_plan(structured_plan)
-        print(f"[ConversationLoop] Extracted tools from plan: {selected_tools}")
+        # --- 1. 严格 schema 校验 ---
+        is_valid, err = self._validate_plan_structure(structured_plan)
+        if not is_valid:
+            print(f"[PlanRevision] REJECTED — invalid plan schema: {err}")
+            self.chat_response.emit(
+                f"Plan revision rejected: {err}. "
+                f"Please describe the change and I'll produce a valid plan."
+            )
+            # 不改变状态，不进入 PLAN_READY
+            return
 
-        # 检索文档
+        # --- 2. 提取工具列表 ---
+        selected_tools = helper.extract_tool_ids_from_plan(structured_plan)
+        print(f"[PlanRevision] Extracted tools from plan: {selected_tools}")
+
+        # 软性检查：统计有多少工具是已注册的（只记录，不拒绝）
+        known_count, unknown_tools = self._count_known_tools(selected_tools)
+        print(f"[PlanRevision] Known tools: {known_count}/{len(selected_tools)}")
+        if unknown_tools:
+            print(f"[PlanRevision] Unknown tools (may be Python libs): {unknown_tools}")
+
+        # --- 3. 检索文档 ---
         if selected_tools:
             selected_tool_IDs_list, combined_documentation_str = \
                 self._retrieve_tool_docs(selected_tools)
@@ -1148,27 +1294,73 @@ class AgentController(QObject):
             selected_tool_IDs_list = []
             combined_documentation_str = ""
 
-        # 保存到 session
+        # --- 4. 保存到 session ---
         import json
         plan_text = json.dumps(structured_plan, indent=2, ensure_ascii=False)
         self.session.set_plan(plan_text)
 
-        # 保存 _analysis_result 供执行阶段使用
+        # --- 5. 构建完整的 _analysis_result（继承旧字段）---
+        # 继承旧字段的目的：_run_execution / _send_feedback_report 需要
+        # task_name 和 html_graph_path 才能正确命名输出文件和生成反馈报告。
+        previous = dict(self._analysis_result) if self._analysis_result else {}
+        task_breakdown = structured_plan.get("task_summary", plan_display_text)
         self._analysis_result = {
-            "structured_plan": structured_plan,
+            "task_name": previous.get("task_name", ""),
+            "task_breakdown": task_breakdown,
+            "task_explanation": previous.get("task_explanation", task_breakdown),
             "selected_tools": selected_tools,
             "selected_tool_IDs": selected_tool_IDs_list,
             "combined_documentation_str": combined_documentation_str,
-            "task_breakdown": structured_plan.get("task_summary", plan_display_text),
-            "data_overview": self.session.data_overview,
+            "data_overview": self.session.data_overview or previous.get("data_overview", ""),
+            "html_graph_path": previous.get("html_graph_path", ""),
+            "structured_plan": structured_plan,
         }
 
-        # 进入 PLAN_READY
+        # --- 6. 进入 PLAN_READY，交回状态机处理 ---
         self.state = AgentState.PLAN_READY
         self.plan_ready.emit(self._analysis_result)
         self.chat_response.emit(plan_display_text)
 
-        print("[ConversationLoop] Entered PLAN_READY state")
+        print("[PlanRevision] Entered PLAN_READY state (state machine will take over on CONFIRM_PLAN)")
+
+    # ========================
+    # 数据概览本地刷新
+    # ========================
+
+    def _refresh_data_overview_local(self):
+        """
+        从文件路径直接读取元数据，刷新 session 中的数据概览。
+        纯本地 I/O，不调用 LLM，每次对话前都可安全调用。
+
+        读取内容：字段名、字段类型、样本值、几何类型、要素数量、CRS。
+        """
+        import SpatialAnalysisAgent_helper as helper
+        import SpatialAnalysisAgent_Constants as constants
+
+        data_path_str = [p.strip() for p in self.data_path.split('\n') if p.strip()]
+        if not data_path_str:
+            return
+
+        overview_lines = []
+        for path in data_path_str:
+            ext = os.path.splitext(path)[1].lower()
+            try:
+                if ext in ('.shp', '.geojson', '.gpkg', '.json', '.kml', '.gml'):
+                    meta = helper.see_vector(path)
+                elif ext in ('.tif', '.tiff', '.img', '.asc', '.nc'):
+                    meta = helper.see_raster(path)
+                elif ext in ('.csv', '.xlsx', '.xls', '.dbf'):
+                    meta = helper.see_table(path)
+                else:
+                    # 尝试当矢量读，读不了就跳过
+                    meta = helper.see_vector(path)
+            except Exception as e:
+                meta = f"(Error reading {path}: {e})"
+
+            overview_lines.append(f"{path}. Data overview: {meta}")
+
+        self.session.set_data_overview(overview_lines)
+        print(f"[ConversationLoop] Data overview refreshed locally ({len(overview_lines)} layers)")
 
     def _run_conversation_loop(self, message: str):
         """
@@ -1188,6 +1380,15 @@ class AgentController(QObject):
 
         # 1. 记录用户消息
         self.session.add_message("user", message)
+
+        # 1.5 每次对话前刷新数据概览（本地读取，不走 LLM，零延迟）
+        #     确保 LLM 始终能看到最新的图层信息，
+        #     即使用户中途加载/移除了图层也能感知。
+        if self.data_path and self.data_path.strip():
+            try:
+                self._refresh_data_overview_local()
+            except Exception as e:
+                print(f"[ConversationLoop] Data overview refresh failed: {e}")
 
         # 2. 组装消息（统一用 build_messages）
         #    step="conversation" 让 SessionContext 注入数据概览、当前 plan、最近结果
@@ -1232,11 +1433,6 @@ class AgentController(QObject):
             self._run_analysis()
             print("[ConversationLoop] Triggered _run_analysis() via GIS_TASK_READY")
 
-        elif action.action_type == "confirm_plan":
-            # PLAN 类型 → 触发状态机的 PLAN_READY（保留兼容）
-            self.session.add_message("assistant", response)
-            self._handle_plan_from_conversation(action)
-
         elif action.action_type == "show_code":
             # CODE 类型 → 进 CodeEditor
             self.session.add_message("assistant", response)
@@ -1246,18 +1442,34 @@ class AgentController(QObject):
             print("[ConversationLoop] Code sent to CodeEditor")
 
         elif action.action_type == "confirm_knowledge":
-            # 知识库更新建议
+            # 知识库更新：直接保存，不弹窗确认
             self.session.add_message("assistant", response)
             self.handle_knowledge_update_action(action)
-            # 状态不变
-            print("[ConversationLoop] Knowledge update requested")
+            # 在对话框显示 LLM 的回复（保存结果由信号处理方显示）
+            self.chat_response.emit(action.data.get("suggestion", response))
+            # 回到 IDLE，解除 UI 锁定
+            self.state = AgentState.IDLE
+            print("[ConversationLoop] Knowledge update requested, state → IDLE")
+
+        elif action.action_type == "confirm_plan":
+            # PLAN 修订捷径：用户在 PLAN_READY / RESULT_READY 状态下用自然语言
+            # 微调现有 plan（例如"改成 1000 米"），LLM 直接输出修改后的 PLAN JSON。
+            # 走这条路径可以跳过完整 _run_analysis 流水线，一次 LLM 调用即完成。
+            self.session.add_message("assistant", response)
+            self._handle_plan_from_conversation(action)
 
         else:
             # QUESTION / CHAT → 直接显示在对话面板
             self.session.add_message("assistant", response)
-            self.chat_response.emit(action.data["message"])
-            # 状态不变（保持当前状态，等用户继续输入）
-            print(f"[ConversationLoop] {action.action_type.upper()} response sent to chat")
+            self.chat_response.emit(action.data.get("message", response))
+            # 如果当前在 PLAN_READY 或 RESULT_READY，保持原状态（用户仍可操作按钮）
+            # 否则回到 IDLE
+            if self._state in (AgentState.PLAN_READY, AgentState.RESULT_READY):
+                # 不改变状态，按钮组仍然可用
+                print(f"[ConversationLoop] {action.action_type.upper()} response sent, keeping state {self._state.name}")
+            else:
+                self.state = AgentState.IDLE
+                print(f"[ConversationLoop] {action.action_type.upper()} response sent to chat, state → IDLE")
 
     # ========================
     # Phase 4: 输出处理（OutputParser + GuardGate）

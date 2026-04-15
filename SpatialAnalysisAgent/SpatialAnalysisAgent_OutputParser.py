@@ -237,23 +237,25 @@ class AgentOutputParser:
         """
         检测 AI 是否建议更新知识库。
 
-        特征：同时满足以下条件
-          - 包含知识库相关关键词
-          - 包含建议/疑问语气
+        优先检测显式标签 [KNOWLEDGE_UPDATE]（Mode 5），
+        回退到启发式关键词匹配。
 
         Returns:
             True 如果检测到知识库更新建议
         """
+        # 优先：显式标签检测
+        if '[KNOWLEDGE_UPDATE]' in response:
+            return True
+
+        # 回退：启发式关键词匹配
         response_lower = response.lower()
 
-        # 知识库相关关键词（中英文）
         knowledge_keywords = [
             '知识库', 'knowledge', '项目知识', 'project knowledge',
             '数据字典', 'data dictionary', '添加到笔记', 'add to notes',
             '记录下来', '保存这个规则'
         ]
 
-        # 建议/疑问语气
         suggestion_patterns = [
             '要不要', '是否需要', '建议添加', '建议记录',
             'would you like', 'shall i add', 'should i save',
@@ -269,12 +271,16 @@ class AgentOutputParser:
         """
         从回复中提取建议写入知识库的内容。
 
-        简单实现：返回整个回复文本。
-        用户确认后，由 UI 层决定如何写入知识库。
+        如果有 [KNOWLEDGE_UPDATE] 标签，提取标签后面的内容。
+        否则返回整个回复文本。
 
         Returns:
             建议的知识库内容
         """
+        tag = '[KNOWLEDGE_UPDATE]'
+        if tag in response:
+            idx = response.index(tag)
+            return response[idx + len(tag):].strip()
         return response
 
     # ------------------------------------------------------------------

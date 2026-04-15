@@ -47,12 +47,15 @@ class SessionContext:
         # 图层名称列表（用于知识检索）
         self._layer_names: List[str] = []
 
+        # 跨任务保留的用户偏好（由 soft_reset 填充）
+        self._preserved_context: str = ""
+
     # ========================
     # 重置与状态管理
     # ========================
 
     def reset(self):
-        """新任务开始时清空所有状态"""
+        """完全重置（仅用于用户主动清空全部历史时）"""
         self.messages.clear()
         self.data_overview.clear()
         self.data_overview_str = ""
@@ -62,6 +65,79 @@ class SessionContext:
         self.task_name = ""
         self.current_task = ""
         self._layer_names.clear()
+        self._preserved_context = ""
+
+    def soft_reset(self):
+        """
+        智能重置：保留用户约定的规则/偏好，清空技术性状态。
+
+        调用时机：用户发起新 GIS 任务（通过 _run_via_agent / SEND_TASK），
+        此时应保留用户在之前对话中约定的细则（如"距离单位用米"、
+        "输出放到 D:/output"），但清除旧任务的 plan、code、results。
+
+        保留的内容会作为 system 消息注入新会话的开头。
+        """
+        # 提取用户约定的偏好/规则
+        preserved = self._extract_user_preferences()
+
+        # 清空技术性状态
+        self.messages.clear()
+        self.data_overview.clear()
+        self.data_overview_str = ""
+        self.current_plan = ""
+        self.executed_codes.clear()
+        self.results.clear()
+        self.task_name = ""
+        self.current_task = ""
+        self._layer_names.clear()
+
+        # 把保留的偏好注入新会话开头
+        self._preserved_context = preserved
+        if preserved:
+            self.messages.append({
+                "role": "system",
+                "content": f"=== User Preferences (from previous conversation) ===\n{preserved}"
+            })
+
+    def _extract_user_preferences(self) -> str:
+        """
+        从对话历史中提取用户约定的规则/偏好。
+
+        策略：收集用户消息中包含偏好关键词的内容，
+        以及 assistant 对这些偏好的确认回复。
+        """
+        if not self.messages:
+            return ""
+
+        preference_keywords = [
+            # 中文
+            '单位', '坐标系', '投影', '输出路径', '输出目录', '保存到',
+            '默认', '规则', '总是', '每次都', '记住', '以后',
+            '不要', '别用', '优先', '偏好', '习惯',
+            # 英文
+            'unit', 'crs', 'projection', 'output path', 'save to',
+            'default', 'rule', 'always', 'remember', 'prefer',
+            'never', "don't use", 'priority',
+        ]
+
+        preference_lines = []
+        for msg in self.messages:
+            if msg["role"] != "user":
+                continue
+            content_lower = msg["content"].lower()
+            if any(kw in content_lower for kw in preference_keywords):
+                # 只保留前200字符避免过长
+                text = msg["content"][:200]
+                preference_lines.append(text)
+
+        if not preference_lines:
+            return ""
+
+        # 限制总长度
+        combined = "\n".join(preference_lines)
+        if len(combined) > 1000:
+            combined = combined[:1000] + "..."
+        return combined
 
     # ========================
     # 数据设置方法
@@ -221,14 +297,13 @@ class SessionContext:
 
         dynamic_parts = []
 
-        # 数据概览（始终包含）
-        if self.data_overview_str:
+        # 数据概览（code_review 不注入，因为 step_instruction 里已经有 data_path）
+        if self.data_overview_str and step != "code_review":
             dynamic_parts.append(f"=== Loaded Data ===\n{self.data_overview_str}")
 
-        # Phase 5: conversation 步骤注入完整上下文（plan + results）
-        # 因为 LLM 需要知道当前状态才能判断是否该生成 PLAN
-        if step in ["conversation", "code_generation", "debug",
-                    "plan_revision", "chat"] and self.current_plan:
+        # current_plan 注入：conversation / code_generation / code_review / debug 等
+        if step in ["conversation", "code_generation", "code_review",
+                    "debug", "plan_revision", "chat"] and self.current_plan:
             dynamic_parts.append(f"=== Current Plan ===\n{self.current_plan}")
 
         if step in ["conversation", "debug", "chat",
