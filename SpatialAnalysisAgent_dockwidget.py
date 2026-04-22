@@ -470,6 +470,10 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.agent.plan_ready.connect(self._on_agent_plan_ready, Qt.QueuedConnection)
         self.agent.result_ready.connect(self._on_agent_result_ready, Qt.QueuedConnection)
         self.agent.task_finished.connect(self._on_agent_task_finished, Qt.QueuedConnection)
+        self.agent.token_summary_ready.connect(
+            lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False),
+            Qt.QueuedConnection
+        )
         # Phase 5: 知识库更新信号连接
         self.agent.knowledge_update_requested.connect(self._on_knowledge_update_requested, Qt.QueuedConnection)
         

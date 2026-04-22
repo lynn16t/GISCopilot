@@ -1111,6 +1111,112 @@ def find_source_node(graph):
 #     # print(f"Preprocessed Task: {fine_tuned_request.strip()}")
 #     return fine_tuned_request
 
+# ============================================================
+# Token Usage Tracker
+# ============================================================
+
+class TokenUsageTracker:
+    """
+    记录整个 task 流程中所有 unified_llm_call 的 token 用量和估算费用。
+    使用：
+        helper.get_token_tracker().reset()       # 新 task 开始时重置
+        helper.get_token_tracker().get_summary() # 结果出来后获取报告
+    """
+
+    # 每 1M tokens 的美元价格（2025 年）
+    PRICES = {
+        'gpt-4o':                     {'input': 2.50,   'output': 10.00},
+        'gpt-4o-mini':                {'input': 0.15,   'output': 0.60},
+        'gpt-4':                      {'input': 30.00,  'output': 60.00},
+        'gpt-5':                      {'input': 2.50,   'output': 10.00},
+        'gpt-5.1':                    {'input': 2.50,   'output': 10.00},
+        'o1':                         {'input': 15.00,  'output': 60.00},
+        'o1-mini':                    {'input': 3.00,   'output': 12.00},
+        'o3-mini':                    {'input': 1.10,   'output': 4.40},
+        'deepseek-chat':              {'input': 0.14,   'output': 0.28},
+        'deepseek-reasoner':          {'input': 0.55,   'output': 2.19},
+        'claude-sonnet-4-20250514':   {'input': 3.00,   'output': 15.00},
+        'claude-haiku-4-5-20251001':  {'input': 0.80,   'output': 4.00},
+        'gemini-2.5-pro':             {'input': 1.25,   'output': 10.00},
+        'gemini-2.5-flash':           {'input': 0.15,   'output': 0.60},
+    }
+    DEFAULT_PRICE = {'input': 2.50, 'output': 10.00}
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self._calls = []
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_cost_usd = 0.0
+
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """字符数估算 token 数（英文 ÷4，中文 ÷3）"""
+        if not text:
+            return 0
+        chinese_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        ratio = chinese_chars / max(len(text), 1)
+        chars_per_token = 3 if ratio > 0.2 else 4
+        return max(1, len(text) // chars_per_token)
+
+    def count_messages_tokens(self, messages: list) -> int:
+        total = 0
+        for msg in messages:
+            content = msg.get('content', '')
+            if isinstance(content, str):
+                total += self._estimate_tokens(content)
+            total += 4   # 每条消息 overhead
+        return total + 3  # reply primer
+
+    def record_call(self, model: str, input_tokens: int, output_tokens: int):
+        price = self.PRICES.get(model, self.DEFAULT_PRICE)
+        cost = (input_tokens * price['input'] + output_tokens * price['output']) / 1_000_000
+        self._calls.append({
+            'model': model,
+            'input_tokens': input_tokens,
+            'output_tokens': output_tokens,
+            'cost_usd': cost,
+        })
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.total_cost_usd += cost
+
+    def get_summary(self) -> str:
+        sep = '─' * 48
+        lines = [
+            sep,
+            f'📊 Token Usage & Cost Summary',
+            sep,
+            f'  API calls      : {len(self._calls)}',
+            f'  Input  tokens  : {self.total_input_tokens:,}',
+            f'  Output tokens  : {self.total_output_tokens:,}',
+            f'  Total  tokens  : {self.total_input_tokens + self.total_output_tokens:,}',
+            f'  Estimated cost : ${self.total_cost_usd:.4f} USD',
+            sep,
+        ]
+        if self._calls:
+            lines.append('  Per-call breakdown:')
+            for i, c in enumerate(self._calls, 1):
+                lines.append(
+                    f'  [{i:02d}] {c["model"]}  '
+                    f'in={c["input_tokens"]:,} out={c["output_tokens"]:,}  '
+                    f'${c["cost_usd"]:.4f}'
+                )
+            lines.append(sep)
+        return '\n'.join(lines)
+
+
+# 模块级单例
+_token_tracker = TokenUsageTracker()
+
+
+def get_token_tracker() -> TokenUsageTracker:
+    """获取全局 token 追踪器"""
+    return _token_tracker
+
+
 def unified_llm_call(request_id, messages, model_name, stream=False, temperature=1, **kwargs):
     """
     保留原 GIBD 代理、GPT5 reasoning_effort、Ollama 配置、streaming 处理
@@ -1118,6 +1224,9 @@ def unified_llm_call(request_id, messages, model_name, stream=False, temperature
     - 使用 create_unified_client() 动态 provider
     - 支持阶段四新增厂商和动态模型列表
     """
+    # 调用前：估算 input tokens
+    input_tokens = _token_tracker.count_messages_tokens(messages)
+
     # 获取 provider 和 client
     client, provider = create_unified_client(model_name)
     model_kwargs = kwargs.copy()
@@ -1148,14 +1257,29 @@ def unified_llm_call(request_id, messages, model_name, stream=False, temperature
                 if isinstance(chunk, str):
                     print(chunk, end="")
                     out += chunk
+        output_tokens = _token_tracker._estimate_tokens(out)
+        _token_tracker.record_call(model_name, input_tokens, output_tokens)
         return out
     else:
         # 非流式
-        if hasattr(response,'choices') and response.choices:
-            return response.choices[0].message.content
-        elif isinstance(response,str):
-            return response.strip()
-        return str(response)
+        if hasattr(response, 'choices') and response.choices:
+            result = response.choices[0].message.content
+        elif isinstance(response, str):
+            result = response.strip()
+        else:
+            result = str(response)
+        # 非流式：优先用 response.usage（OpenAI 直连时精确）
+        if hasattr(response, 'usage') and response.usage:
+            exact_in = getattr(response.usage, 'prompt_tokens', None)
+            exact_out = getattr(response.usage, 'completion_tokens', None)
+            if exact_in is not None and exact_out is not None:
+                input_tokens, output_tokens = exact_in, exact_out
+            else:
+                output_tokens = _token_tracker._estimate_tokens(result)
+        else:
+            output_tokens = _token_tracker._estimate_tokens(result)
+        _token_tracker.record_call(model_name, input_tokens, output_tokens)
+        return result
     
 def GIBD_Service_call(api_key, service_name, request_id, model_name, messages, stream, temperature, **kwargs):
     url = f"https://www.gibd.online/api/openai/{api_key}"
@@ -1410,7 +1534,7 @@ _HARD_GIS_PATTERNS = [
 
 
 def get_layer_info() -> str:
-    """Collect loaded layer info from QGIS: name + type + field names (max 10)."""
+    """Collect loaded layer info from QGIS: name, type, geometry, fields, CRS, extent, and raster metadata."""
     try:
         from qgis.core import QgsProject, QgsVectorLayer, QgsRasterLayer, QgsWkbTypes
         layers = QgsProject.instance().mapLayers().values()
@@ -1422,9 +1546,33 @@ def get_layer_info() -> str:
             if isinstance(layer, QgsVectorLayer):
                 geom = QgsWkbTypes.displayString(layer.wkbType())
                 fields = [f.name() for f in layer.fields()][:10]
-                lines.append(f"- {name} (Vector/{geom}, Fields: {', '.join(fields)})")
+                crs = layer.crs().authid() if layer.crs().isValid() else "unknown"
+                feature_count = layer.featureCount()
+                ext = layer.extent()
+                extent_str = f"{ext.xMinimum():.4f},{ext.yMinimum():.4f} : {ext.xMaximum():.4f},{ext.yMaximum():.4f}"
+                lines.append(
+                    f"- {name} (Vector/{geom})\n"
+                    f"  CRS: {crs} | Features: {feature_count} | Extent: {extent_str}\n"
+                    f"  Fields: {', '.join(fields)}"
+                )
             elif isinstance(layer, QgsRasterLayer):
-                lines.append(f"- {name} (Raster)")
+                crs = layer.crs().authid() if layer.crs().isValid() else "unknown"
+                ext = layer.extent()
+                extent_str = f"{ext.xMinimum():.4f},{ext.yMinimum():.4f} : {ext.xMaximum():.4f},{ext.yMaximum():.4f}"
+                width = layer.width()
+                height = layer.height()
+                res_x = round(layer.rasterUnitsPerPixelX(), 6)
+                res_y = round(layer.rasterUnitsPerPixelY(), 6)
+                band_count = layer.bandCount()
+                provider = layer.dataProvider()
+                dtype = provider.dataTypeSize(1) if provider else "unknown"
+                nodata = provider.sourceNoDataValue(1) if provider else "unknown"
+                lines.append(
+                    f"- {name} (Raster)\n"
+                    f"  CRS: {crs} | Extent: {extent_str}\n"
+                    f"  Size: {width}x{height} px | Resolution: ({res_x}, {res_y}) | Bands: {band_count}\n"
+                    f"  DataType size (bits): {dtype} | NoData: {nodata}"
+                )
             else:
                 lines.append(f"- {name} (Other)")
         return '\n'.join(lines)
@@ -2449,13 +2597,14 @@ def see_vector(file_path):
     """Read vector metadata using QGIS native API (avoids pyarrow/geopandas crash)."""
     try:
         from qgis.core import QgsVectorLayer, QgsWkbTypes
+        from PyQt5.QtCore import QVariant
         layer = QgsVectorLayer(file_path, "temp_inspect", "ogr")
         if not layer.isValid():
             return f"(Failed to open: {file_path})"
 
         fields = layer.fields()
         column_lines = []
-        # Sample first feature for example values
+        # Sample first feature for numeric/fallback values
         sample_feat = None
         for feat in layer.getFeatures():
             sample_feat = feat
@@ -2464,10 +2613,16 @@ def see_vector(file_path):
         for field in fields:
             name = field.name()
             dtype = field.typeName()
-            sample_value = ""
-            if sample_feat:
-                sample_value = str(sample_feat[name])
-            column_lines.append(f"  - {name}: {dtype} (sample: {sample_value})")
+            field_idx = layer.fields().indexOf(name)
+            if field.type() == QVariant.String:
+                # Show up to 5 unique values so AI knows the exact string format
+                raw_vals = layer.uniqueValues(field_idx, limit=5)
+                unique_vals = [str(v) for v in raw_vals if v is not None and str(v) not in ('NULL', '')][:5]
+                sample_str = f"unique samples: {unique_vals}"
+            else:
+                sample_value = str(sample_feat[name]) if sample_feat else ""
+                sample_str = f"sample: {sample_value}"
+            column_lines.append(f"  - {name}: {dtype} ({sample_str})")
 
         types_str = "Columns:\n" + "\n".join(column_lines)
 

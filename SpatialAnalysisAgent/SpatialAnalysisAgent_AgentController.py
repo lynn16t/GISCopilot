@@ -185,6 +185,7 @@ class AgentController(QObject):
 
     error_occurred = pyqtSignal(str)
     task_finished = pyqtSignal(bool)
+    token_summary_ready = pyqtSignal(str)   # token 用量 + 费用汇总
 
     def __init__(self, session=None, knowledge_manager=None):
         super().__init__()
@@ -390,6 +391,10 @@ class AgentController(QObject):
         # Phase 3: 智能重置 SessionContext（保留用户偏好），设置新任务
         self.session.soft_reset()
         self.session.set_task(task)
+
+        # 重置 token 追踪器，开始统计本次 task 的用量
+        import SpatialAnalysisAgent_helper as _h
+        _h.get_token_tracker().reset()
 
         self.status_update.emit("正在理解您的消息...")
         self._generate_request_id()
@@ -1028,6 +1033,10 @@ class AgentController(QObject):
         }
         self.state = AgentState.RESULT_READY
         self.result_ready.emit(result_info)
+
+        # 发射 token 用量 + 费用汇总到对话面板
+        import SpatialAnalysisAgent_helper as _h
+        self.token_summary_ready.emit(_h.get_token_tracker().get_summary())
 
         self._send_feedback_report(
             error_collector, generated_code, data_overview)
