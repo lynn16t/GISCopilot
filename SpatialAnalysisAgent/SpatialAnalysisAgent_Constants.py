@@ -425,6 +425,70 @@ perform_idw_interpolation()
 ```
 """
 operation_requirement = [
+    # === [必选参数] ===
+    "When calling any overlay algorithm (`native:intersection`, `native:difference`, `native:union`, `native:symmetricaldifference`, `native:clip`), input shapefiles in the wild often contain invalid geometries that abort the run with 'Feature (N) from \"X\" has invalid geometry'. To avoid this, ALWAYS pass `'INVALID_FEATURES_FILTERING': 1` in the params dict (1 = Skip features with invalid geometries). Only switch to 0 (Stop) if the task explicitly demands strict geometry validation.",
+    "When calling `gdal:rasterize`, `gdal:proximity`, or `gdal:rasterize_over`, you MUST set `UNITS` explicitly. Omitting it causes 'Incorrect parameter value for UNITS' and the algorithm aborts.",
+    "When calling `gdal:viewshed`, you MUST set both `INPUT` (DEM raster layer) and `OBSERVER` (point layer) explicitly. Missing either causes 'Could not load source layer for INPUT/OBSERVER: no value specified for parameter'.",
+    "When calling `gdal:rasterize_over`, `FIELD` MUST be a non-empty string referring to a real attribute on the INPUT layer. If no field exists, switch to `gdal:rasterize` with a `BURN` value.",
+    "When the task supplies multiple input layers (e.g. 'apply X on these two shapefiles'), every supplied layer MUST be processed by the algorithm at least once. Do not silently drop inputs.",
+    "If you need to use any field from the input shapefile layer, first access the fields (example code: `fields = input_layer.fields()`), then select the appropriate field carefully from the list of fields in the layer.",
+
+    # === [类型限制] ===
+    "`UNITS` for any gdal raster algorithm is an integer code: `1` = Georeferenced units, `0` = Pixels. Never pass a string like 'Georeferenced units'.",
+    "When using ANY GDAL processing tool (any algorithm with ID starting with `gdal:`), NEVER pass a raw file path string as the INPUT parameter. Many QGIS versions will silently skip execution without any error when given a pure path. Always wrap the path first: use `QgsVectorLayer(path, 'name', 'ogr')` for vector data or `QgsRasterLayer(path, 'name')` for raster data, and pass the layer object as input.",
+    "When `processing.run(...)` is called with `'OUTPUT': 'TEMPORARY_OUTPUT'`, the returned `result['OUTPUT']` is already a `QgsVectorLayer` object, NOT a file path string. Do NOT wrap it in `QgsVectorLayer(result['OUTPUT'], ...)` — passing a QgsVectorLayer object into the QgsVectorLayer constructor will raise `TypeError: unexpected type 'QgsVectorLayer'`. Use `result['OUTPUT']` directly as the layer object.",
+    "INVERSE OF THE PREVIOUS RULE: any function that expects a **file path** (e.g. `geopandas.read_file(...)`, `gpd.read_file(...)`, `pandas.read_csv(...)`, `fiona.open(...)`, `gdal.Open(...)`, `ogr.Open(...)`) MUST receive a string path, NOT a `QgsVectorLayer`/`QgsRasterLayer` object. If the upstream value is `result['OUTPUT']` from a `'TEMPORARY_OUTPUT'` run, you MUST first persist it to disk (e.g. via `processing.run('native:savefeatures', {'INPUT': result['OUTPUT'], 'OUTPUT': '/tmp/x.shp'})` or `result['OUTPUT'].dataProvider().dataSourceUri()` for file-backed layers) and pass the resulting path. Passing a layer object to `gpd.read_file` produces 'does not exist in the file system, and is not recognized as a supported dataset name'.",
+    "`QgsProject.instance().addMapLayer(...)` accepts ONLY a `QgsMapLayer` (e.g. `QgsVectorLayer`, `QgsRasterLayer`) object — NEVER a plain path string. If you have a path, first wrap it: `lyr = QgsVectorLayer(path, name, 'ogr')` (or `QgsRasterLayer(path, name)`), check `lyr.isValid()`, then call `addMapLayer(lyr)`. Passing a string raises 'QgsProject.addMapLayer(): argument 1 has unexpected type str'.",
+    "Before calling `processing.run` on any path-based input, verify the file exists with `assert os.path.exists(p), f'missing input: {p}'`. If the runner did not provide the file you expected (e.g. the input dataset is incomplete), `print` a precise diagnostic listing the missing file(s) and `return` rather than letting downstream `processing.run` fail with the cryptic 'Could not load source layer'.",
+    "When using `native:joinattributestable`, the `FIELD` (key on INPUT) and `FIELD_2` (key on INPUT_2) MUST be names of fields that ACTUALLY EXIST on each respective layer. Do not guess names like 'GEOID' or 'ID' blindly — first list `[f.name() for f in layer.fields()]` and pick a key that is present on BOTH layers. If no shared key exists, fall back to a spatial join (e.g. `native:joinattributesbylocation`).",
+    "Never write intermediate / temporary outputs back into the `input_data/` directory. On Windows the input shapefile's .shp/.dbf/.prj/.shx are often held open by QGIS as long as the layer is loaded, so any subsequent attempt to overwrite or create a sibling file in the same directory raises `[WinError 32] another process is using this file`. Always write intermediates to the workspace `output/` directory (or the QGIS processing temp dir).",
+    "This QGIS build runs on Qt6. NEVER write `from PyQt5...` or `import PyQt5` — those imports raise 'PyQt5 classes cannot be imported in a QGIS build based on Qt6.' and abort the entire run. ALWAYS use the version-independent shim: `from qgis.PyQt.QtCore import QVariant, QSize, Qt`, `from qgis.PyQt.QtGui import QColor, QImage, QPainter`. Code containing the string 'PyQt5' is rejected by preflight.",
+    "If you need to use `QVariant` it should be imported from `qgis.PyQt.QtCore` (NOT `PyQt5.QtCore`, NOT `qgis.core`).",
+    "If you need to use `QColor` it should be imported from `qgis.PyQt.QtGui` (NOT `PyQt5.QtGui`).",
+    "If you need to use `QgsVectorLayer`, it should always be imported from qgis.core.",
+    "If you need to load a raster layer, use this format `output_layer = QgsRasterLayer(output_path, 'Slope Output')`",
+    "When adding a new field to the a shapefile, it should be noted that the maximum length for field name is 10, so avoid mismatch in the fieldname in the data and in the calculation.",
+    "When creating a thematic map after joining attributes to a shapefile, ensure that the field name length for the attribute use for thematic map do not exceed 10, if it exceed 10, truncate the field name (E.g, 'White_Population' can be truncated to 'White_Popu'). Adhering to the 10 field name length limit ensures consistency and prevents errors during thematic map creation.",
+
+    # === [性能阈值] ===
+    "Before calling `native:creategrid` or `qgis:regularpoints` with sub-meter spacing (< 1m) on layers in a metric CRS, estimate the resulting cell count from the extent and spacing. If it would exceed 5,000,000 cells, the parameter is almost certainly mis-stated; ask for clarification rather than running it.",
+    "MANDATORY pre-check for `native:creategrid` and `qgis:regularpoints` whenever EXTENT is computed at runtime (e.g. `extent = some_layer.extent()` or `f'{e.xMinimum()},...'`): immediately after obtaining the extent and BEFORE calling `processing.run`, you MUST compute the projected cell count: `width = abs(extent.xMaximum() - extent.xMinimum()); height = abs(extent.yMaximum() - extent.yMinimum()); est_cells = (width / HSPACING) * (height / VSPACING)`. If `est_cells > 5_000_000`, DO NOT call `processing.run` — instead, increase HSPACING/VSPACING to a sensible value so `est_cells <= 5_000_000`, `print(f'Adjusted grid spacing from X to Y because est_cells={est_cells:.0f}')`, then proceed. Skipping this check on a polygon that becomes 65 km × 91 km after reprojection at 2 m spacing produces ~1.5 BILLION features and SIGABRTs the QGIS subprocess (case 049). Note: if input data is in geographic CRS (degrees) and you reproject to a metric CRS (meters), the extent jumps from ~1° to ~100,000 m — always estimate AFTER the reprojection.",
+
+    # === [算法 ID 易错] ===
+    "When using Raster calculator 'native:rastercalculator' is wrong rather the correct ID for the Raster Calculator algorithm is 'native:rastercalc'.",
+    "Algorithm `native:savevectorlayer` does NOT exist; to save a vector use `native:savefeatures`.",
+    "Algorithm `native:executesql` does NOT exist in QGIS 3.40; use `qgis:executesql` (or `gdal:executesql` for OGR / `native:postgisexecutesql` for PostGIS).",
+    "GDAL grid interpolation has explicit per-method IDs: use `gdal:gridinversedistance` (IDW), `gdal:gridinversedistancenearestneighbor`, `gdal:gridnearestneighbor`, `gdal:gridaverage`, `gdal:gridlinear`, or `gdal:griddatametrics`. The shorthand IDs `gdal:grid`, `gdal:grididw`, `gdal:gridinversedistanceweighted` do NOT exist and will fail with 'Algorithm gdal:... not found'. For point-to-raster IDW from QGIS-side, `qgis:idwinterpolation` is also available.",
+    "GRASS algorithms in this Qt6 LTR build use the `grass:` prefix ONLY. NEVER write `grass7:` (e.g. write `grass:r.composite`, `grass:r.neighbors`, `grass:r.viewshed`, `grass:r.watershed` — `grass7:*` IDs do NOT exist and will fail with 'Algorithm grass7:... not found').",
+    "When the task asks for the **difference** of two layers, use `native:difference`. Use `native:symmetricaldifference` ONLY when the task literally says 'symmetric(al) difference'.",
+    "When using `gdal:proximity`, ensure all shapefiles are rasterized before using them",
+    "When using `native:selectbylocation` (or any select-by-* algorithm), the algorithm does NOT produce a new output layer — it creates a selection set on the INPUT layer in-place. Therefore `result['OUTPUT']` IS the input layer object itself, not a separate layer. To export selected features, call `native:saveselectedfeatures` with the ORIGINAL INPUT LAYER (the one you passed as INPUT), NOT `result['OUTPUT']`.",
+    "When creating charts/plots (bar, scatter, box, etc.): use `seaborn` by default; save the result (html/image) to the output directory and only print the file path; do NOT load the output into QGIS. For scatter plots, use 'qgis:vectorlayerscatterplot' (NOT 'native:scatterplot' or 'qgis:scatterplot').",
+
+    # === [输出落盘] ===
+    "If you are using the processing algorithm, make the output parameter to be the user's specified output directory . And use `QgsVectorLayer` to load the feature as a new layer: For example `Buffer_layer = QgsVectorLayer(result['OUTPUT'], 'Buffered output', 'ogr')` for the case of a shapefile.",
+    "Similarly, if you used geopandas to generate a new layer, use `QgsVectorLayer` to load the feature as a new layer: For example `Buffer_layer = QgsVectorLayer(result['OUTPUT'], 'Buffered output', 'ogr')` for the case of a shapefile.",
+    "Whenever a new layer is being saved, ensure the code first checks if a file with the same name already exists in the output directory, and if it doesn't, go ahead and save with the original name, but if same name exist, append a number to the filename to create a unique name, thereby avoiding any errors related to overwriting or saving the layer.",
+    "When naming any output layer, choose a name that is concise, descriptive, easy to read, and free of spaces.",
+    "Ensure that temporary layer is not used as the output parameter",
+    "When performing multi-step tasks that involve creating intermediary layers, ensure there is a waiting period before proceeding to the next step. This allows enough time for the intermediary layers to be fully created, preventing errors such as 'data not found.'",
+    "For algorithms whose primary purpose is producing a new layer (e.g. `native:dissolve`, `native:meancoordinates`, `native:zonalstatisticsfb`), set `OUTPUT` to a real file path inside the workspace directory; if you only pass `TEMPORARY_OUTPUT` the result lives in memory and the run produces no inspectable artifact.",
+
+    # === [输出验证] ===
+    "When performing any operation that generates an output vector or raster layer , include the code to load the resulting output layer into QGIS",
+    "When performing any operation such as counting of features, generating plots (scatter plot, bar plot), etc., which do not require creation of new layers, do not include load the resulting output layer into QGIS rather print the result",
+    "When using tool that is used to generate counts e.g 'Vector information(gdal:ogrinfo), Count points in polygon(native:countpointsinpolygon), etc., don't just print the file path (e.g the html path) but also ensure you print the count(e.g Number of conties)",
+    "NOTE: `vector_layer.featureCount()` can be use to generate the count of features",
+    "If you are printing any file path (e.g html, png, etc.), Do not include any additional information. just print the file path",
+    "For tasks that contains interrogative words such as ('how', 'what', 'why', 'when', 'where', 'which'), ensure that no layers are loaded into the QGIS, instead the result should be printed",
+    "After `native:createpointslayerfromtable` or any CSV-to-points conversion, immediately check `featureCount()` on the result. If it is 0, print a clear failure message and stop; never let a downstream step continue with an empty layer.",
+    "When filtering or querying features by a string attribute value (e.g., county name, city name), NEVER hard-code the target string blindly. Always perform a runtime lookup first to find the exact matching value: (1) get all unique values with `all_vals = list(layer.uniqueValues(layer.fields().indexOf('FIELD_NAME')))`; (2) find the best match case-insensitively: `match = next((v for v in all_vals if str(v).lower() == target.lower()), None)`; (3) if no exact match, try partial: `match = next((v for v in all_vals if target.lower() in str(v).lower() or str(v).lower() in target.lower()), None)`; (4) use `match` (the real value) in the filter expression. This prevents silent failures from format differences (e.g. 'BC' vs 'BC County', 'New York' vs 'NEW YORK').",
+
+    # === [数据加载] ===
+    "When loading a CSV layer as a layer, use this: `'f'file///{csv_path}?delimeter=,''`, assuming the csv is comma-separated, but use the csv_path directly for the Input parameter in join operations.",
+    "If you are to use processing algorithm, you do not need to include the code to load a data",
+
+    # === [代码骨架] ===
     "Think step by step",
     "If you need to perform more than one operation, you must perform the operations step by step",
     "Use the selected tools provided",
@@ -433,38 +497,10 @@ operation_requirement = [
     "Put your reply into a Python code block, Explanation or conversation can be Python comments at the begining of the code block(enclosed by ```python and ```).",
     "The python code is only in a function named in with the operation name e.g 'perform_idw_interpolation()'. The last line is to execute this function.",
     "Only do the reprojection as needed when 1) e.g., calculating distances/buffers that needs projected CRS, and the layers have different projections",
-    "If you need to use `QVariant` should be imported from `PyQt5.Qtcore` and NOT `qgis.core`",
-    "If you need to use `QColor` should be imported from `PyQt5.QtGui`",
     "Put your reply into a Python code block (enclosed by python and ), NO explanation or conversation outside the code block.",
     "You are not limited to QGIS python functions/tools, you can also use other python functions asuch as geopandas, numpy, scipy etc.",
-    "If you need to use `QgsVectorLayer`, it should always be imported from qgis.core.",
     "DO NOT add validity check and DO NOT raise any exception.",
     "DO NOT raise exceptions messages.",
-    "When performing any operation that generates an output vector or raster layer , include the code to load the resulting output layer into QGIS",
-    "When performing any operation such as counting of features, generating plots (scatter plot, bar plot), etc., which do not require creation of new layers, do not include load the resulting output layer into QGIS rather print the result",
-    "If you need to use any field from the input shapefile layer, first access the fields (example code: `fields = input_layer.fields()`), then select the appropriate field carefully from the list of fields in the layer.",
-    "If you need to load a raster layer, use this format `output_layer = QgsRasterLayer(output_path, 'Slope Output')`",
-    "When using Raster calculator 'native:rastercalculator' is wrong rather the correct ID for the Raster Calculator algorithm is 'native:rastercalc'.",
-    "When creating charts/plots (bar, scatter, box, etc.): use `seaborn` by default; save the result (html/image) to the output directory and only print the file path; do NOT load the output into QGIS. For scatter plots, use 'qgis:vectorlayerscatterplot' (NOT 'native:scatterplot' or 'qgis:scatterplot').",
-    "When using tool that is used to generate counts e.g 'Vector information(gdal:ogrinfo), Count points in polygon(native:countpointsinpolygon), etc., don't just print the file path (e.g the html path) but also ensure you print the count(e.g Number of conties)",
-    "NOTE: `vector_layer.featureCount()` can be use to generate the count of features",
-    "If you are printing any file path (e.g html, png, etc.), Do not include any additional information. just print the file path",
-    "When loading a CSV layer as a layer, use this: `'f'file///{csv_path}?delimeter=,''`, assuming the csv is comma-separated, but use the csv_path directly for the Input parameter in join operations.",
-    "If you are to use processing algorithm, you do not need to include the code to load a data",
-    "For tasks that contains interrogative words such as ('how', 'what', 'why', 'when', 'where', 'which'), ensure that no layers are loaded into the QGIS, instead the result should be printed",
-    "If you are using the processing algorithm, make the output parameter to be the user's specified output directory . And use `QgsVectorLayer` to load the feature as a new layer: For example `Buffer_layer = QgsVectorLayer(result['OUTPUT'], 'Buffered output', 'ogr')` for the case of a shapefile.",
-    "Similarly, if you used geopandas to generate a new layer, use `QgsVectorLayer` to load the feature as a new layer: For example `Buffer_layer = QgsVectorLayer(result['OUTPUT'], 'Buffered output', 'ogr')` for the case of a shapefile.",
-    "Whenever a new layer is being saved, ensure the code first checks if a file with the same name already exists in the output directory, and if it doesn't, go ahead and save with the original name, but if same name exist, append a number to the filename to create a unique name, thereby avoiding any errors related to overwriting or saving the layer.",
-    "When naming any output layer, choose a name that is concise, descriptive, easy to read, and free of spaces.",
-    "Ensure that temporary layer is not used as the output parameter",
-    "When using `gdal:proximity`, ensure all shapefiles are rasterized before using them",
-    "When using ANY GDAL processing tool (any algorithm with ID starting with `gdal:`), NEVER pass a raw file path string as the INPUT parameter. Many QGIS versions will silently skip execution without any error when given a pure path. Always wrap the path first: use `QgsVectorLayer(path, 'name', 'ogr')` for vector data or `QgsRasterLayer(path, 'name')` for raster data, and pass the layer object as input.",
-    "When performing multi-step tasks that involve creating intermediary layers, ensure there is a waiting period before proceeding to the next step. This allows enough time for the intermediary layers to be fully created, preventing errors such as 'data not found.'",
-    "When adding a new field to the a shapefile, it should be noted that the maximum length for field name is 10, so avoid mismatch in the fieldname in the data and in the calculation."
-    "When creating a thematic map after joining attributes to a shapefile, ensure that the field name length for the attribute use for thematic map do not exceed 10, if it exceed 10, truncate the field name (E.g, 'White_Population' can be truncated to 'White_Popu'). Adhering to the 10 field name length limit ensures consistency and prevents errors during thematic map creation.",
-    "When using `native:selectbylocation` (or any select-by-* algorithm), the algorithm does NOT produce a new output layer — it creates a selection set on the INPUT layer in-place. Therefore `result['OUTPUT']` IS the input layer object itself, not a separate layer. To export selected features, call `native:saveselectedfeatures` with the ORIGINAL INPUT LAYER (the one you passed as INPUT), NOT `result['OUTPUT']`.",
-    "When `processing.run(...)` is called with `'OUTPUT': 'TEMPORARY_OUTPUT'`, the returned `result['OUTPUT']` is already a `QgsVectorLayer` object, NOT a file path string. Do NOT wrap it in `QgsVectorLayer(result['OUTPUT'], ...)` — passing a QgsVectorLayer object into the QgsVectorLayer constructor will raise `TypeError: unexpected type 'QgsVectorLayer'`. Use `result['OUTPUT']` directly as the layer object.",
-    "When filtering or querying features by a string attribute value (e.g., county name, city name), NEVER hard-code the target string blindly. Always perform a runtime lookup first to find the exact matching value: (1) get all unique values with `all_vals = list(layer.uniqueValues(layer.fields().indexOf('FIELD_NAME')))`; (2) find the best match case-insensitively: `match = next((v for v in all_vals if str(v).lower() == target.lower()), None)`; (3) if no exact match, try partial: `match = next((v for v in all_vals if target.lower() in str(v).lower() or str(v).lower() in target.lower()), None)`; (4) use `match` (the real value) in the filter expression. This prevents silent failures from format differences (e.g. 'BC' vs 'BC County', 'New York' vs 'NEW YORK')."
 ]
 
 # ------------- OPERATION_CODE REVIEW------------------------------------------------------
@@ -481,40 +517,65 @@ Your job: compare the code against the plan, documentation, and data, then fix a
 If the code is correct, return it unchanged. Always return the complete corrected code.'''
 
 operation_code_review_requirement = [
-    # ── 核心审查：对照 Plan ──
+    # === [核心审查：对照 Plan] ===
     "Verify the code implements EVERY step in the Execution Plan in the correct order. Flag missing or out-of-order steps.",
     "Verify each tool ID in the code matches the tool ID specified in the plan (e.g. 'native:joinbylocationsummary', not a made-up ID).",
     "Verify tool parameters (PREDICATE, SUMMARIES, FIELD, etc.) match the plan and the tool documentation examples.",
     "Verify input/output layer paths: the code must use the exact data paths provided, not placeholder paths.",
-    # ── 数据一致性 ──
+
+    # === [数据一致性] ===
     "Verify field names used in the code actually exist in the data (check the Data Properties section). Watch out for truncation (shapefile 10-char limit) and case sensitivity.",
     "Verify CRS handling: only add reprojection if the plan or data properties indicate mismatched CRS.",
-    # ── 常见 bug ──
+
+    # === [必选参数] ===
+    "Verify any `gdal:rasterize`, `gdal:proximity`, or `gdal:rasterize_over` call sets `UNITS` explicitly. Missing `UNITS` causes 'Incorrect parameter value for UNITS' and the algorithm aborts.",
+    "Verify `gdal:viewshed` calls explicitly set both `INPUT` (DEM raster) and `OBSERVER` (point layer). Missing either causes 'Could not load source layer for INPUT/OBSERVER: no value specified for parameter'.",
+    "Verify `gdal:rasterize_over` `FIELD` is a non-empty real attribute on the input. If no field exists, the code should switch to `gdal:rasterize` with a `BURN` value.",
+    "Verify multi-input tasks consume every supplied layer at least once. If the task lists N input files but the code only references one, flag the dropped inputs and add the missing processing.",
+
+    # === [类型限制] ===
+    "Verify `UNITS` for any gdal raster algorithm is an integer (0=Pixels, 1=Georeferenced units), never a string like 'Georeferenced units'.",
+    "When using ANY GDAL tool (any `gdal:*` algorithm), verify the INPUT value is a QgsVectorLayer or QgsRasterLayer object, NOT a raw path string. A raw path silently causes the tool to skip execution without raising any error.",
+    "When `processing.run(...)` is called with `'OUTPUT': 'TEMPORARY_OUTPUT'`, verify that `result['OUTPUT']` is used directly as a layer object. Do NOT wrap it in `QgsVectorLayer(result['OUTPUT'], ...)` — it is already a QgsVectorLayer, and double-wrapping raises `TypeError: unexpected type 'QgsVectorLayer'`.",
+    "If you need `QColor`, import it from `qgis.PyQt.QtGui` (NEVER from `PyQt5.QtGui` — this is a Qt6 build).",
+    "When adding fields to shapefiles, field names must not exceed 10 characters. Ensure consistency between field names in data and in calculations.",
+
+    # === [性能阈值] ===
+    "Verify `native:creategrid` and `qgis:regularpoints` spacings are sensible. Sub-meter spacing on metric-CRS layers with county-sized extents will generate billions of features and time out — require coarser spacing or a smaller extent.",
+
+    # === [算法 ID 易错] ===
     "The Raster Calculator algorithm ID must be 'native:rastercalc', NOT 'native:rastercalculator'.",
+    "Algorithm `native:savevectorlayer` does NOT exist; to save a vector use `native:savefeatures`.",
+    "Algorithm `native:executesql` does NOT exist; rewrite to `qgis:executesql`.",
+    "Any `grass7:*` algorithm ID is invalid in this Qt6 LTR build — rewrite to the same name with the `grass:` prefix.",
+    "Verify `native:difference` is used when the task says 'difference', and `native:symmetricaldifference` only when the task literally says 'symmetric(al) difference'.",
     "Scatter plot must use 'qgis:vectorlayerscatterplot', NOT 'native:scatterplot' or 'qgis:scatterplot'.",
     "When using `gdal:proximity`, ensure shapefiles are rasterized first.",
-    "When using ANY GDAL tool (any `gdal:*` algorithm), verify the INPUT value is a QgsVectorLayer or QgsRasterLayer object, NOT a raw path string. A raw path silently causes the tool to skip execution without raising any error.",
-    "Output must be saved to the user's workspace directory, not a temporary path. Ensure that temporary layer is not used as the output parameter.",
-    "If a file with the same output name already exists, append a number to avoid overwriting.",
-    "For multi-step tasks with intermediate layers, add a small delay or flush between steps to prevent 'data not found' errors.",
     "When using `native:selectbylocation` (or any select-by-* algorithm), verify that `native:saveselectedfeatures` receives the ORIGINAL INPUT LAYER (the layer passed as INPUT to the select algorithm), NOT `result['OUTPUT']`. The select algorithm modifies the input layer in-place — `result['OUTPUT']` is the same object as the input layer, but relying on it is error-prone. Always use the original input layer variable.",
-    "When `processing.run(...)` is called with `'OUTPUT': 'TEMPORARY_OUTPUT'`, verify that `result['OUTPUT']` is used directly as a layer object. Do NOT wrap it in `QgsVectorLayer(result['OUTPUT'], ...)` — it is already a QgsVectorLayer, and double-wrapping raises `TypeError: unexpected type 'QgsVectorLayer'`.",
+
+    # === [输出落盘] ===
+    "Output must be saved to the user's workspace directory, not a temporary path. Ensure that temporary layer is not used as the output parameter.",
+    "Verify final-output algorithms (e.g. `native:dissolve`, `native:meancoordinates`, `native:zonalstatisticsfb`) write to a real workspace path, not `TEMPORARY_OUTPUT`. A successful run that produces no inspectable artifact must be treated as a failure.",
+    "If a file with the same output name already exists, append a number to avoid overwriting.",
+    "When naming output layers, choose concise, descriptive names without spaces.",
+    "For multi-step tasks with intermediate layers, add a small delay or flush between steps to prevent 'data not found' errors.",
+
+    # === [输出验证] ===
+    "Verify CSV→points conversions (e.g. `native:createpointslayerfromtable`) check `featureCount() > 0` before continuing. An empty result must print a clear failure message; never let a downstream step run on an empty layer.",
     "When the code filters or queries features by a string attribute value, verify that it does NOT hard-code the string literal directly into the filter. The correct pattern is: (1) `all_vals = list(layer.uniqueValues(layer.fields().indexOf('FIELD')))`, (2) find exact or partial match case-insensitively, (3) use the matched real value in the expression. If the code skips this lookup and hard-codes the string (e.g. `\"NAME\" = 'BC County'` without prior lookup), rewrite it to use the runtime lookup pattern.",
-    # ── 代码生成规范（审查修改代码时须遵守）──
-    "Put your reply into a single Python code block (enclosed by ```python and ```). Explanations go as comments at the beginning of the code block.",
-    "The python code must be wrapped in a function named after the operation (e.g. 'perform_idw_interpolation()'). The last line must call this function.",
-    "Do NOT include QGIS initialization code in the script.",
-    "If you need `QColor`, import it from `PyQt5.QtGui`.",
-    "When using QGIS processing algorithms, use `QgsVectorLayer` to load results. Example: `output_layer = QgsVectorLayer(result['OUTPUT'], 'Layer Name', 'ogr')`.",
-    "Similarly for geopandas outputs, use `QgsVectorLayer` to load the saved file into QGIS.",
     "When performing operations that generate output layers (vector/raster), include code to load the result into QGIS.",
     "When performing operations that only produce counts, stats, or plots (no new layers), do NOT load layers — just print the result.",
     "For interrogative tasks (how, what, why, when, where, which), only print the answer, do not create or load layers.",
+
+    # === [代码骨架] ===
+    "Put your reply into a single Python code block (enclosed by ```python and ```). Explanations go as comments at the beginning of the code block.",
+    "The python code must be wrapped in a function named after the operation (e.g. 'perform_idw_interpolation()'). The last line must call this function.",
+    "Do NOT include QGIS initialization code in the script.",
+    "When using QGIS processing algorithms, use `QgsVectorLayer` to load results. Example: `output_layer = QgsVectorLayer(result['OUTPUT'], 'Layer Name', 'ogr')`.",
+    "Similarly for geopandas outputs, use `QgsVectorLayer` to load the saved file into QGIS.",
     "The data is already loaded in QGIS — use the provided data paths directly, do not re-load data.",
     "The code runs inside QGIS Python environment. Third-party libraries must be explicitly imported if needed.",
     "When creating charts/plots, use `seaborn` by default. Save the output file to the workspace directory and print only the file path.",
-    "When naming output layers, choose concise, descriptive names without spaces.",
-    "When adding fields to shapefiles, field names must not exceed 10 characters. Ensure consistency between field names in data and in calculations.",
 ]
 
 
@@ -544,10 +605,10 @@ def get_smart_debug_requirements(error_msg="", code="", operation_type=None):
         "NOTE: You are not limited to QGIS tools only, you can also make use of python libraries",
         "When using `QgsVectorLayer`, it should always be imported from `qgis.core`.",
         "When using QGIS processing algorithm, use `QgsVectorLayer` to load shapefiles. For example `output_layer = QgsVectorLayer(result['OUTPUT'], 'Layer Name', 'ogr')`",
-        "If you need to use `QColor` should be imported from `PyQt5.QtGui`",
+        "If you need to use `QColor` it should be imported from `qgis.PyQt.QtGui` (NEVER `PyQt5.QtGui` — this is a Qt6 build).",
         "DO NOT include the QGIS initialization code in the script",
         "Make your codes to be concise/short and accurate",
-        "`QVariant` should be imported from `PyQt5.Qtcore` and NOT `qgis.core`",
+        "`QVariant` should be imported from `qgis.PyQt.QtCore` (NEVER from `PyQt5.QtCore` or `qgis.core` — this is a Qt6 build).",
         "When running processing algorithms, use `processing.run('algorithm_id', {parameter_dictionary})`",
         "Put your reply into a Python code block (enclosed by python and ), NO explanation or conversation outside the code block.",
         "When using Raster calculator 'native:rastercalculator' is wrong rather the correct ID for the Raster Calculator algorithm is 'native:rastercalc'.",
@@ -577,11 +638,11 @@ debug_requirement = [
     "If the generated codes for the selected tools provided are not working you can use other python functions such as geopandas, numpy, scipy etc.",
     "When using `QgsVectorLayer`, it should always be imported from `qgis.core`.",
     "When using QGIS processing algorithm, use `QgsVectorLayer` to load shapefiles. For example `output_layer = QgsVectorLayer(result['OUTPUT'], 'Layer Name', 'ogr')`",
-    "If you need to use `QColor` should be imported from `PyQt5.QtGui`",
+    "If you need to use `QColor` it should be imported from `qgis.PyQt.QtGui` (NEVER `PyQt5.QtGui` — this is a Qt6 build).",
     "Use the latest qgis libraries and methods.",
     "DO NOT include the QGIS initialization code in the script",
     "Make your codes to be concise/short and accurate",
-    "`QVariant` should be imported from `PyQt5.Qtcore` and NOT `qgis.core`",
+    "`QVariant` should be imported from `qgis.PyQt.QtCore` (NEVER from `PyQt5.QtCore` or `qgis.core` — this is a Qt6 build).",
     "NOTE: `QgsVectorJoinInfo` may not always be available or accessible in recent QGIS installations, thus use `QgsVectorLayerJoinInfo` instead",
     "When running processing algorithms, use `processing.run('algorithm_id', {parameter_dictionary})`",
     "Put your reply into a Python code block (enclosed by python and ), NO explanation or conversation outside the code block.",

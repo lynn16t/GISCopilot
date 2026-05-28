@@ -2,14 +2,27 @@ tool_ID = "gdal:proximity"
 
 tool_name = "Euclidean Distance (Proximity)"
 
-brief_description = """Generates a raster proximity map indicating the distance from the center of each cell to the nearest feature or source cell. Equivalent to ArcGIS Euclidean Distance / Distance Accumulation."""
+brief_description = """Generates a raster proximity map indicating the distance from the center of each cell to the nearest feature or source cell. Equivalent to ArcGIS Euclidean Distance / Distance Accumulation.
 
-parameters = """INPUT: Input raster layer. Type: [raster]
+IMPORTANT: the UNITS parameter is REQUIRED. The enum order is the OPPOSITE of gdal:rasterize:
+  UNITS=0 -> Georeferenced coordinates (output values are in CRS units, e.g. metres). USE THIS for real-world distances.
+  UNITS=1 -> Pixel coordinates (output values are pixel counts).
+For a real distance raster, set UNITS=0.
+
+UNITS MUST BE A PYTHON INT LITERAL — NOT A STRING.
+  CORRECT:   'UNITS': 0       # bare int
+  WRONG:     'UNITS': '0'     # string — fails ERROR_CODE_PARAM_TYPE
+  WRONG:     'UNITS': "0"     # string — fails ERROR_CODE_PARAM_TYPE
+  WRONG:     omitting UNITS   # fails ERROR_CODE_PARAM_MISSING"""
+
+parameters = """INPUT: Input raster layer (already rasterized source). Type: [raster]
 BAND: Band number to use. Type: [raster band] Default: 1
-VALUES: Target pixel values (comma separated). Type: [string] Default: ''
-MAX_DISTANCE: Maximum distance to generate. Type: [number] Default: 0.0
-NODATA: Nodata value for output. Type: [number] Default: 0.0
-DATA_TYPE: Output data type. 0: Byte, 1: Int16, 2: UInt16, 3: UInt32, 4: Int32, 5: Float32, 6: Float64. Type: [enumeration] Default: 5
+VALUES: Target pixel values, comma separated; empty = all non-zero. Type: [string] Default: ''
+UNITS: Distance units. REQUIRED. 0=Georeferenced coordinates, 1=Pixel coordinates. Type: [enumeration] Default: 1
+MAX_DISTANCE: Maximum distance to compute (in UNITS units). 0 = unlimited. Type: [number] Default: 0
+REPLACE: Replacement value for pixels within MAX_DISTANCE. Type: [number] Default: 0
+NODATA: Nodata value for output. Type: [number] Default: 0
+DATA_TYPE: Output data type. 0:Byte 1:Int16 2:UInt16 3:UInt32 4:Int32 5:Float32 6:Float64. Type: [enumeration] Default: 5
 OUTPUT: Output proximity raster. Type: [raster]"""
 
 code_example = """import processing
@@ -18,19 +31,21 @@ from qgis.core import QgsProject, QgsRasterLayer
 def euclidean_distance():
     input_path = 'D:/Data/source_raster.tif'
     output_path = 'D:/Output/distance.tif'
-    
+
     params = {
         'INPUT': input_path,
         'BAND': 1,
         'VALUES': '',
+        'UNITS': 0,           # 0 = Georeferenced coords -> output is in CRS units (metres)
         'MAX_DISTANCE': 0,
+        'REPLACE': 0,
         'NODATA': 0,
         'DATA_TYPE': 5,
         'OUTPUT': output_path
     }
-    
+
     result = processing.run("gdal:proximity", params)
-    
+
     dist_layer = QgsRasterLayer(result['OUTPUT'], 'Euclidean Distance')
     QgsProject.instance().addMapLayer(dist_layer)
 

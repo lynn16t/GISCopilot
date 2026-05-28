@@ -2,16 +2,30 @@ tool_ID = "gdal:rasterize"
 
 tool_name = "Polygon to Raster (Rasterize)"
 
-brief_description = """Converts a vector layer to a raster layer, burning vector geometries into a raster. Equivalent to ArcGIS Polygon/Polyline/Point to Raster."""
+brief_description = """Converts a vector layer to a raster layer, burning vector geometries into a raster. Equivalent to ArcGIS Polygon/Polyline/Point to Raster.
+
+IMPORTANT: the UNITS parameter is REQUIRED. It controls how WIDTH/HEIGHT are interpreted.
+  UNITS=0 -> WIDTH/HEIGHT are pixel counts of the output raster.
+  UNITS=1 -> WIDTH/HEIGHT are pixel SIZE in the layer's CRS units (e.g. metres).
+For typical map output use UNITS=1 with WIDTH=HEIGHT=desired cell size.
+
+UNITS MUST BE A PYTHON INT LITERAL — NOT A STRING.
+  CORRECT:   'UNITS': 1       # bare int
+  WRONG:     'UNITS': '1'     # string — fails ERROR_CODE_PARAM_TYPE
+  WRONG:     'UNITS': "1"     # string — fails ERROR_CODE_PARAM_TYPE
+  WRONG:     omitting UNITS   # fails ERROR_CODE_PARAM_MISSING"""
 
 parameters = """INPUT: Input vector layer. Type: [vector: any]
 FIELD: Attribute field to use for burn value. Type: [tablefield: numeric]
 BURN: Fixed burn value (if no field). Type: [number] Default: 0
-WIDTH: Output raster width in pixels. Type: [number]
-HEIGHT: Output raster height in pixels. Type: [number]
+USE_Z: Burn Z values from geometry. Type: [boolean] Default: False
+UNITS: Output raster size units. REQUIRED. 0=Pixels, 1=Georeferenced units. Type: [enumeration]
+WIDTH: Width / horizontal resolution. Meaning depends on UNITS. Type: [number]
+HEIGHT: Height / vertical resolution. Meaning depends on UNITS. Type: [number]
 EXTENT: Output extent. Type: [extent]
-NODATA: NoData value. Type: [number] Default: 0
+NODATA: NoData value. Type: [number]
 DATA_TYPE: Output data type. Type: [enumeration] Default: 5 (Float32)
+INVERT: Invert rasterization. Type: [boolean] Default: False
 OUTPUT: Output raster. Type: [raster]"""
 
 code_example = """import processing
@@ -20,22 +34,23 @@ from qgis.core import QgsProject, QgsRasterLayer, QgsVectorLayer
 def polygon_to_raster():
     input_path = 'D:/Data/landuse.shp'
     input_layer = QgsVectorLayer(input_path, 'Landuse', 'ogr')
-    
+
     params = {
         'INPUT': input_path,
         'FIELD': 'class_id',
         'BURN': 0,
         'USE_Z': False,
-        'WIDTH': 1000,
-        'HEIGHT': 1000,
+        'UNITS': 1,           # 1 = Georeferenced units; WIDTH/HEIGHT below are cell size in CRS units
+        'WIDTH': 30,          # 30 m cell when CRS is metric
+        'HEIGHT': 30,
         'EXTENT': input_layer.extent(),
         'NODATA': -9999,
         'DATA_TYPE': 5,
         'OUTPUT': 'D:/Output/rasterized.tif'
     }
-    
+
     result = processing.run("gdal:rasterize", params)
-    
+
     layer = QgsRasterLayer(result['OUTPUT'], 'Rasterized')
     QgsProject.instance().addMapLayer(layer)
 

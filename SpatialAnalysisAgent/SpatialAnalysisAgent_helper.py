@@ -1,3 +1,4 @@
+import ast
 import io
 import sys
 import re
@@ -651,6 +652,1065 @@ def extract_code_from_str(LLM_reply_str, verbose=False):
     return python_code
 
 
+# =====================================================================
+# Preflight validator
+# Static AST scan run before exec() to surface known coding mistakes as
+# RuntimeError("ERROR_CODE_XXX: ...") so the auto-debug loop below gets a
+# precise correction signal instead of letting QGIS abort silently or with
+# a vague "Incorrect parameter value" message.
+# Coverage maps to case_success_review_001_086.md FAIL cases.
+# =====================================================================
+
+# Cache: alg_id -> {'required': [...], 'optional': [...], 'all': set(...)} or None
+_TOOL_PARAM_CACHE = {}
+
+# Hard-coded parameter aliases for known LLM mix-ups. Used in the prompt
+# whitelist block to call out the most common confusions explicitly.
+_TOOL_PARAM_CONFUSIONS = {
+    "native:lineintersections":
+        "USES `INTERSECT` (NOT `OVERLAY`). Confusing siblings: "
+        "native:intersection / native:union / native:difference all use OVERLAY.",
+    "qgis:lineintersections":
+        "USES `INTERSECT` (NOT `OVERLAY`).",
+    "native:difference":
+        "USES `INPUT` + `OVERLAY`. NOT `INTERSECT`.",
+    "native:intersection":
+        "USES `INPUT` + `OVERLAY`. NOT `INTERSECT`.",
+    "native:union":
+        "USES `INPUT` + `OVERLAY`. NOT `INTERSECT`.",
+    "native:symmetricaldifference":
+        "Use ONLY when task literally says 'symmetric(al) difference'; "
+        "otherwise use native:difference.",
+    "gdal:viewshed":
+        "INPUT must be a QgsRasterLayer object (the DEM). "
+        "OBSERVER must be a QgsVectorLayer object (point layer). "
+        "DO NOT pass raw paths or coordinate strings.",
+    "qgis:basicstatisticsforfields":
+        "USES `INPUT_LAYER` (NOT `INPUT`).",
+    "native:basicstatisticsforfields":
+        "USES `INPUT_LAYER` (NOT `INPUT`).",
+}
+
+
+def _find_tool_toml_path(alg_id):
+    """Locate the TOML file for an algorithm ID. Tries the alg_id as-is,
+    then swaps `native:`<->`qgis:` (QGIS migrated many algorithms between
+    those namespaces but keeps both runtime-compatible).
+    """
+    current_script_dir = os.path.dirname(os.path.abspath(__file__))
+    docs_dir = os.path.join(current_script_dir, "Tools_Documentation")
+    if not os.path.isdir(docs_dir):
+        return None
+
+    candidates = [alg_id]
+    if alg_id.startswith("native:"):
+        candidates.append("qgis:" + alg_id[len("native:"):])
+    elif alg_id.startswith("qgis:"):
+        candidates.append("native:" + alg_id[len("qgis:"):])
+
+    for cand in candidates:
+        stfid = re.sub(r"[ :?\/]", "_", cand)
+        target = f"{stfid}.toml"
+        for root, _dirs, files in os.walk(docs_dir):
+            if target in files:
+                return os.path.join(root, target)
+    return None
+
+
+def _parse_param_lines(parameters_text):
+    """Parse the body of a tool TOML's `parameters` triple-quoted string.
+
+    Each parameter is one (or more) line(s) of the form
+        PARAM_NAME: <description>. Type: [...] Default: <default>
+    A parameter is treated as optional if its description contains
+    'Optional' (case-sensitive) or a 'Default:' marker.
+    """
+    if not parameters_text:
+        return {"required": [], "optional": [], "all": set()}
+    required, optional = [], []
+    cur_name = None
+    cur_desc_parts = []
+
+    def flush():
+        if cur_name is None:
+            return
+        joined = " ".join(cur_desc_parts)
+        if "Optional" in joined or "Default:" in joined:
+            optional.append(cur_name)
+        else:
+            required.append(cur_name)
+
+    for line in parameters_text.splitlines():
+        m = re.match(r"^([A-Z][A-Z0-9_]+)\s*:\s*(.*)$", line)
+        if m:
+            flush()
+            cur_name = m.group(1)
+            cur_desc_parts = [m.group(2)]
+        else:
+            cur_desc_parts.append(line)
+    flush()
+    return {
+        "required": required,
+        "optional": optional,
+        "all": set(required) | set(optional),
+    }
+
+
+def get_tool_param_whitelist(alg_id):
+    """Return parsed parameter whitelist for `alg_id` or None if no TOML
+    can be found / parsed. Result is cached per process.
+    """
+    if alg_id in _TOOL_PARAM_CACHE:
+        return _TOOL_PARAM_CACHE[alg_id]
+
+    path = _find_tool_toml_path(alg_id)
+    if path is None:
+        _TOOL_PARAM_CACHE[alg_id] = None
+        return None
+
+    try:
+        import tomli as tomllib
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        _TOOL_PARAM_CACHE[alg_id] = None
+        return None
+
+    params_text = data.get("parameters", "")
+    parsed = _parse_param_lines(params_text)
+    if not parsed["all"]:
+        _TOOL_PARAM_CACHE[alg_id] = None
+        return None
+
+    _TOOL_PARAM_CACHE[alg_id] = parsed
+    return parsed
+
+
+def build_parameter_whitelist_block(alg_ids):
+    """Build a strict-parameter-names prompt block for the given algorithms.
+    Returns "" when no TOML data is available for any of them, so callers
+    can simply concatenate the result.
+    """
+    if not alg_ids:
+        return ""
+    sections = []
+    for tid in alg_ids:
+        wl = get_tool_param_whitelist(tid)
+        if not wl:
+            continue
+        block = [f"  {tid}:"]
+        if wl["required"]:
+            block.append(f"    REQUIRED keys: {wl['required']}")
+        if wl["optional"]:
+            block.append(f"    OPTIONAL keys: {wl['optional']}")
+        if tid in _TOOL_PARAM_CONFUSIONS:
+            block.append(f"    NOTE: {_TOOL_PARAM_CONFUSIONS[tid]}")
+        sections.append("\n".join(block))
+    if not sections:
+        return ""
+    header = (
+        "============================================================\n"
+        "STRICT PARAMETER NAMES — HARD CONSTRAINT\n"
+        "============================================================\n"
+        "For each algorithm below, you MUST use ONLY the listed parameter\n"
+        "keys when calling processing.run(...). Using any other key triggers:\n"
+        "  'Could not load source layer for <KEY>: no value specified for parameter'\n"
+        "and the run aborts.\n"
+    )
+    footer = "\n============================================================\n"
+    return header + "\n".join(sections) + footer
+
+
+# Path-like file extensions used by preflight to decide whether a string
+# parameter value should be checked for existence on disk.
+_PATHY_EXTENSIONS = (
+    ".shp", ".gpkg", ".geojson", ".kml", ".gml", ".tif", ".tiff",
+    ".jpg", ".jpeg", ".png", ".asc", ".csv", ".xlsx", ".xls", ".vrt",
+    ".dem", ".sdat", ".nc", ".hdf", ".dbf",
+)
+
+# Output-style parameter keys whose value is *expected* not to exist yet
+# (preflight should NOT path-check them).
+_OUTPUT_PARAM_KEYS = {
+    "OUTPUT", "OUTPUT_LAYER", "OUTPUT_FILE", "OUTPUT_DIR", "OUTPUT_DIRECTORY",
+    "OUTPUT_HTML_FILE", "OUTPUT_RASTER", "OUTPUT_VECTOR",
+    "TARGET_FILE", "TARGET", "REPORT", "HTML_FILE",
+}
+
+_PREFLIGHT_BAD_ALGORITHM_IDS = {
+    # Case 023: agent invented this ID; the real save algorithm is savefeatures.
+    "native:savevectorlayer": "native:savefeatures",
+    # Common LLM slip elsewhere in the codebase.
+    "native:rastercalculator": "native:rastercalc",
+    # Case 067: legacy ID; QGIS 3.40 algorithm is native:addxyfields.
+    "native:addxyfieldstolayer": "native:addxyfields",
+    # Case 079: legacy ID; QGIS 3.40 algorithm is native:rastersampling.
+    "native:samplerastervalues": "native:rastersampling",
+    # Case 060: no native copy-raster algorithm in QGIS 3.40; gdal:translate is
+    # the canonical "copy raster (optionally setting NoData)" path.
+    "native:copyraster": "gdal:translate",
+    # Case 075: LLM snake-cased the display name "Rasterize (overwrite with
+    # attribute)"; the real ID is gdal:rasterize_over.
+    "gdal:rasterize_overwrite_with_attribute": "gdal:rasterize_over",
+    # Cluster D: native:executesql does NOT exist; the working IDs in QGIS 3.40
+    # are qgis:executesql / gdal:executesql / native:postgisexecutesql.
+    "native:executesql": "qgis:executesql",
+    # Case 075: gdal:grid / gdal:grididw don't exist. The real IDs are spelled
+    # out: gdal:gridinversedistance(nearestneighbor), gdal:gridnearestneighbor,
+    # gdal:gridaverage, gdal:gridlinear, gdal:griddatametrics. We map the most
+    # common LLM hallucinations to the closest correct algorithm.
+    "gdal:grididw": "gdal:gridinversedistance",
+    "gdal:gridinversedistanceweighted": "gdal:gridinversedistance",
+    "gdal:grididw": "gdal:gridinversedistance",
+    "gdal:grid": "gdal:gridnearestneighbor",
+    "gdal:gridnearest": "gdal:gridnearestneighbor",
+    # Cluster C: this Qt6 LTR build registers GRASS algorithms under the
+    # `grass:` prefix only — `grass7:` is gone. Generic `grass7:*` -> `grass:*`
+    # rewriting is also handled in _preflight_check_call below; these explicit
+    # mappings cover the IDs we have seen the LLM emit most often.
+    "grass7:r.composite": "grass:r.composite",
+    "grass7:r.neighbors": "grass:r.neighbors",
+    "grass7:r.viewshed": "grass:r.viewshed",
+    "grass7:r.fill.dir": "grass:r.fill.dir",
+    "grass7:r.watershed": "grass:r.watershed",
+    "grass7:r.water.outlet": "grass:r.water.outlet",
+    "grass7:r.stream.extract": "grass:r.stream.extract",
+    "grass7:v.surf.idw": "grass:v.surf.idw",
+}
+
+# Hard cap on grid / regular-points feature count (Case 049/053).
+_PREFLIGHT_SCALE_HARD_CAP = 5_000_000
+
+# Set by _preflight_validate so the per-call checker can inspect the raw
+# source for inline guard patterns (e.g. an `assert est_cells < N` that the
+# LLM emitted in response to the prompt rule).
+_active_code_text = ""
+
+
+def _preflight_code_has_grid_size_check(code):
+    """True if the source text contains a recognizable cell-count guard.
+
+    We accept any of:
+      - `assert est_cells <= ...` / `assert ... < 5_000_000`
+      - a literal mention of the constant `5_000_000` near `cells` or `est`
+      - a `raise ...` inside an `if cells > ...` branch
+
+    This is intentionally lax: we just want evidence that the LLM thought
+    about it. False positives are fine; false negatives are what crash QGIS.
+    """
+    if not isinstance(code, str) or not code:
+        return False
+    lc = code.lower()
+    if "5_000_000" in lc or "5000000" in lc:
+        return True
+    if "est_cells" in lc:
+        return True
+    return bool(re.search(r"assert\s+\w*cells?\w*", lc))
+
+
+def _preflight_estimate_grid_cells_from_data(data_path, hspacing, vspacing):
+    """Best-effort: read an input .shp/.gpkg/.tif from `data_path` via OGR/GDAL,
+    estimate how big the grid would be in METERS, and divide by spacing.
+
+    Returns int(estimated_cells) or None if we can't tell.
+
+    Why this matters: case 049's input was a 0.79° × 0.82° polygon in EPSG:4269
+    (lat/lon). Reprojected to UTM 17N that's ~65 km × 91 km. The LLM picked
+    HSPACING=VSPACING=2.0 (meters) and crashed QGIS with ~1.48 billion cells.
+    Statically, we can detect the dataset is geographic, convert to a rough
+    metric extent (1° ≈ 111 km), and refuse the call.
+    """
+    if not data_path:
+        return None
+    try:
+        hs = float(hspacing)
+        vs = float(vspacing)
+    except (TypeError, ValueError):
+        return None
+    if hs <= 0 or vs <= 0:
+        return None
+    try:
+        from osgeo import ogr, gdal, osr
+    except Exception:
+        return None
+    # data_path may be multi-line manifest text. Pull out a likely path.
+    candidates = []
+    for line in str(data_path).splitlines():
+        s = line.strip().strip("'\"")
+        if not s:
+            continue
+        m = re.search(
+            r"([A-Za-z]:[\\/][^,\s'\"]+\.(?:shp|gpkg|geojson|kml|gml|tif|tiff))",
+            s, re.IGNORECASE,
+        )
+        if m and os.path.exists(m.group(1)):
+            candidates.append(m.group(1))
+    seen = set()
+    candidates = [c for c in candidates if not (c in seen or seen.add(c))]
+    if not candidates:
+        return None
+    best = None
+    for path in candidates:
+        try:
+            ext = path.lower().rsplit(".", 1)[-1]
+            if ext in ("tif", "tiff"):
+                ds = gdal.Open(path)
+                if ds is None:
+                    continue
+                gt = ds.GetGeoTransform()
+                if not gt:
+                    continue
+                xs = ds.RasterXSize
+                ys = ds.RasterYSize
+                xmin = gt[0]
+                ymax = gt[3]
+                xmax = xmin + gt[1] * xs
+                ymin = ymax + gt[5] * ys
+                wkt = ds.GetProjection() or ""
+            else:
+                ds = ogr.Open(path)
+                if ds is None:
+                    continue
+                lyr = ds.GetLayer()
+                if lyr is None:
+                    continue
+                xmin, xmax, ymin, ymax = lyr.GetExtent()
+                sref = lyr.GetSpatialRef()
+                wkt = sref.ExportToWkt() if sref else ""
+            width = abs(xmax - xmin)
+            height = abs(ymax - ymin)
+            # If CRS looks geographic (degrees), inflate to approximate meters
+            # using 1° latitude ≈ 111 km, 1° longitude ≈ 111 km × cos(lat).
+            is_geo = False
+            try:
+                if wkt:
+                    sr = osr.SpatialReference()
+                    sr.ImportFromWkt(wkt)
+                    is_geo = bool(sr.IsGeographic())
+            except Exception:
+                pass
+            if is_geo:
+                lat_mid = (ymin + ymax) / 2.0
+                import math
+                width_m = width * 111_000 * max(math.cos(math.radians(lat_mid)), 0.1)
+                height_m = height * 111_000
+            else:
+                width_m, height_m = width, height
+            cells = (width_m / hs) * (height_m / vs)
+            if best is None or cells > best:
+                best = cells
+        except Exception:
+            continue
+    if best is None:
+        return None
+    return int(best)
+
+
+
+class _PreflightUnresolved:
+    """Sentinel for AST values we cannot statically evaluate."""
+
+    def __repr__(self):
+        return "<unresolved>"
+
+
+_PREFLIGHT_UNRESOLVED = _PreflightUnresolved()
+
+
+def _preflight_literal(node):
+    try:
+        return ast.literal_eval(node)
+    except (ValueError, SyntaxError, TypeError):
+        return _PREFLIGHT_UNRESOLVED
+
+
+def _preflight_dict(node):
+    if not isinstance(node, ast.Dict):
+        return {}
+    out = {}
+    for k_node, v_node in zip(node.keys, node.values):
+        if k_node is None:
+            continue
+        key = _preflight_literal(k_node)
+        if not isinstance(key, str):
+            continue
+        out[key] = _preflight_literal(v_node)
+    return out
+
+
+def _preflight_collect_dict_assignments(tree):
+    """Scan top-level / function-level `var = {...}` assignments so we can
+    resolve `processing.run('alg', params_var)` calls statically.
+
+    LLM-generated code overwhelmingly uses the pattern:
+        params_viewshed = {'INPUT': dem_layer, 'OBSERVER': pts, ...}
+        processing.run('gdal:viewshed', params_viewshed)
+    Without this resolver the per-call validator sees an empty dict and
+    fires ERROR_CODE_PARAM_MISSING for every required key — exactly the
+    case 028 / case 029 false-positive that kept the LLM in a hot loop.
+
+    Returns: dict {var_name: dict-of-resolved-keys-and-values}
+    Variables reassigned multiple times keep the LAST value (closest to
+    the processing.run call in linear order, which matches how Python
+    actually executes).
+    """
+    var_map = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        resolved = _preflight_dict(node.value)
+        for tgt in node.targets:
+            if isinstance(tgt, ast.Name):
+                var_map[tgt.id] = resolved
+    return var_map
+
+
+def _preflight_resolve_params(arg_node, dict_var_map):
+    """Best-effort: resolve the SECOND positional arg to processing.run
+    into a dict of params. Returns either:
+      - a dict (literal or resolved variable) -> validator can do hard checks
+      - None                                  -> opaque, skip required-key checks
+    """
+    if isinstance(arg_node, ast.Dict):
+        return _preflight_dict(arg_node)
+    if isinstance(arg_node, ast.Name) and arg_node.id in dict_var_map:
+        return dict_var_map[arg_node.id]
+    return None
+
+
+def _preflight_check_call(alg, params, task, data_path="", params_opaque=False):
+    """Return [(error_code, message, suggestion), ...]; empty list = OK.
+
+    If `params_opaque` is True, the caller could not statically resolve the
+    params dict (e.g. it came from a function call or runtime computation).
+    Required-key checks are skipped in that case so we don't false-positive
+    on perfectly valid code that uses a `params_X = {...}` indirection.
+    """
+    issues = []
+
+    if alg in _PREFLIGHT_BAD_ALGORITHM_IDS:
+        issues.append((
+            "ERROR_CODE_ALG_NOT_FOUND",
+            f"Algorithm ID '{alg}' does not exist in QGIS 3.x.",
+            f"Use '{_PREFLIGHT_BAD_ALGORITHM_IDS[alg]}' instead.",
+        ))
+        return issues  # don't bother validating params on a non-existent alg
+
+    if alg in {"gdal:rasterize_over", "gdal:rasterize_over_fixed_value"} and not params_opaque:
+        field = params.get("FIELD", _PREFLIGHT_UNRESOLVED)
+        if field is None or field == "":
+            issues.append((
+                "ERROR_CODE_PARAM_VALUE",
+                f"`{alg}` FIELD is empty/None; rasterize_over needs a real attribute name.",
+                "Switch to gdal:rasterize with a BURN value if no source field exists.",
+            ))
+
+    if alg == "gdal:viewshed" and not params_opaque:
+        for required in ("INPUT", "OBSERVER"):
+            if required not in params:
+                issues.append((
+                    "ERROR_CODE_PARAM_MISSING",
+                    f"`gdal:viewshed` requires {required}.",
+                    f"Set {required} to a loaded layer object, not a placeholder.",
+                ))
+                continue
+            val = params[required]
+            if val is None or val == "":
+                issues.append((
+                    "ERROR_CODE_PARAM_VALUE",
+                    f"`gdal:viewshed` {required} is empty/None.",
+                    f"Set {required} to a loaded layer object, not a placeholder.",
+                ))
+
+    if alg in {"native:creategrid", "qgis:regularpoints"}:
+        spacings = []
+        for k in ("HSPACING", "VSPACING", "SPACING"):
+            v = params.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
+                spacings.append(float(v))
+        if spacings and min(spacings) < 0.5:
+            issues.append((
+                "ERROR_CODE_SCALE_EXCEEDED",
+                f"`{alg}` spacing {min(spacings)} is sub-meter; would generate billions of features (Case 053).",
+                "Use spacing >= 1m unless the user explicitly requested finer; otherwise ask for clarification.",
+            ))
+        elif spacings:
+            extent = params.get("EXTENT")
+            estimated_from_literal = False
+            if isinstance(extent, str):
+                m = re.match(
+                    r"\s*([\-0-9.eE+]+)\s*,\s*([\-0-9.eE+]+)\s*,\s*([\-0-9.eE+]+)\s*,\s*([\-0-9.eE+]+)",
+                    extent,
+                )
+                if m:
+                    estimated_from_literal = True
+                    try:
+                        xmin, xmax, ymin, ymax = (float(g) for g in m.groups())
+                        hs = params.get("HSPACING") or params.get("SPACING") or spacings[0]
+                        vs = params.get("VSPACING") or params.get("SPACING") or spacings[0]
+                        est = (abs(xmax - xmin) / float(hs)) * (abs(ymax - ymin) / float(vs))
+                        if est > _PREFLIGHT_SCALE_HARD_CAP:
+                            issues.append((
+                                "ERROR_CODE_SCALE_EXCEEDED",
+                                f"`{alg}` would generate ~{int(est):,} cells (cap: {_PREFLIGHT_SCALE_HARD_CAP:,}).",
+                                "Increase spacing, restrict extent, or write to GeoPackage instead of shapefile.",
+                            ))
+                    except (TypeError, ValueError):
+                        pass
+
+            # Case 049 / 081 family: EXTENT was computed at runtime
+            # (`layer.extent()`, f-string with .xMinimum() etc.) so the static
+            # check above never fired and the LLM walked into a billion-cell
+            # OOM crash. Two-step defence:
+            #   1. Try to estimate from an input .shp on disk (the runner
+            #      provides `data_path`), which lets us refuse the call when
+            #      the data is hugely larger than the spacing implies.
+            #   2. If we still can't tell, REQUIRE the generated code itself
+            #      to include an inline cell-count assertion — refuse otherwise.
+            if not estimated_from_literal:
+                hs = params.get("HSPACING") or params.get("SPACING") or spacings[0]
+                vs = params.get("VSPACING") or params.get("SPACING") or spacings[0]
+                static_est = _preflight_estimate_grid_cells_from_data(data_path, hs, vs)
+                if static_est is not None and static_est > _PREFLIGHT_SCALE_HARD_CAP:
+                    issues.append((
+                        "ERROR_CODE_SCALE_EXCEEDED",
+                        f"`{alg}` with HSPACING={hs}, VSPACING={vs} on the "
+                        f"provided input layer would generate "
+                        f"~{int(static_est):,} cells once reprojected to a "
+                        f"metric CRS (cap: {_PREFLIGHT_SCALE_HARD_CAP:,}). "
+                        f"Calling processing.run on this would SIGABRT the "
+                        f"QGIS subprocess.",
+                        "Increase HSPACING/VSPACING (e.g. 50–500 m for a "
+                        "county-sized polygon) until cells <= 5_000_000, or "
+                        "restrict EXTENT to a sub-region the user actually "
+                        "wants. Compute the estimate explicitly in code.",
+                    ))
+                elif static_est is None:
+                    # Fall back to demanding an inline assertion in the source.
+                    # We accept any of: assert est_cells < N, raise on cap,
+                    # an `if ... > 5_000_000` branch.
+                    if not _preflight_code_has_grid_size_check(_active_code_text):
+                        issues.append((
+                            "ERROR_CODE_GRID_UNCHECKED",
+                            f"`{alg}` is called with a runtime-computed EXTENT "
+                            f"and spacing ({hs}, {vs}); the static validator "
+                            f"cannot prove the cell count is bounded.",
+                            "Insert BEFORE the processing.run call: "
+                            "`width = abs(extent.xMaximum() - extent.xMinimum()); "
+                            "height = abs(extent.yMaximum() - extent.yMinimum()); "
+                            f"est_cells = (width/{hs})*(height/{vs}); "
+                            f"assert est_cells <= 5_000_000, "
+                            f"f'grid too large: {{est_cells:.0f}} cells'`. "
+                            "If the assertion would fire, raise HSPACING/VSPACING.",
+                        ))
+
+    if alg == "native:symmetricaldifference" and task:
+        t = task.lower()
+        if " difference" in t and "symmetric" not in t and "symmetrical" not in t:
+            issues.append((
+                "ERROR_CODE_ALG_MISMATCH",
+                "Task asks for 'difference' but code uses native:symmetricaldifference.",
+                "Use native:difference unless the task literally says 'symmetric(al) difference'.",
+            ))
+
+    # Generic parameter-name whitelist check: catches OVERLAY-vs-INTERSECT
+    # style hallucinations on any tool whose TOML doc we can parse.
+    issues.extend(_preflight_check_param_keys(alg, params))
+
+    # Generic path-existence check: filename strings passed to INPUT-style
+    # parameters that don't exist on disk surface as a concrete error
+    # instead of QGIS's vague "Could not load source layer" later.
+    issues.extend(_preflight_check_param_paths(alg, params))
+
+    return issues
+
+
+def _preflight_check_param_keys(alg, params):
+    """Reject parameter keys not declared by the algorithm's TOML doc."""
+    if not params:
+        return []
+    wl = get_tool_param_whitelist(alg)
+    if not wl or not wl.get("all"):
+        return []
+    used = {k for k in params.keys() if isinstance(k, str)}
+    invalid = sorted(used - wl["all"])
+    if not invalid:
+        return []
+    valid_sorted = sorted(wl["all"])
+    suggestion = (
+        f"Use only these keys: {valid_sorted}. "
+        + (f"Hint: {_TOOL_PARAM_CONFUSIONS[alg]}" if alg in _TOOL_PARAM_CONFUSIONS else "")
+    ).strip()
+    return [(
+        "ERROR_CODE_PARAM_UNKNOWN",
+        f"`{alg}` does not accept parameter(s) {invalid}.",
+        suggestion,
+    )]
+
+
+def _preflight_check_param_paths(alg, params):
+    """If a parameter value is a string ending in a known data extension
+    and is NOT an output parameter, verify the path exists on disk.
+    """
+    issues = []
+    for key, val in params.items():
+        if not isinstance(key, str) or key in _OUTPUT_PARAM_KEYS:
+            continue
+        if not isinstance(val, str) or len(val) < 4:
+            continue
+        low = val.lower()
+        if not low.endswith(_PATHY_EXTENSIONS):
+            continue
+        # Only treat values that look path-like (drive letter / separator)
+        # as paths; bare basenames are usually layer-display names.
+        if not (re.match(r"^[A-Za-z]:[\\/]", val) or val.startswith(("/", "\\"))
+                or "/" in val or "\\" in val):
+            continue
+        if os.path.exists(val):
+            continue
+        issues.append((
+            "ERROR_CODE_PATH_NOT_FOUND",
+            f"`{alg}` parameter `{key}` points at a file that does not exist: {val}",
+            "Use the absolute path emitted by the runner (see Data path / "
+            "loaded_layers in the system message); do not hardcode or guess "
+            "subdirectories.",
+        ))
+    return issues
+
+
+def _preflight_check_multi_input(code, data_path):
+    """Case 048: task supplies N input files but only one is referenced."""
+    if not data_path:
+        return []
+    candidates = []
+    for line in data_path.splitlines():
+        m = re.search(
+            r"([A-Za-z0-9_\-.]+\.(shp|gpkg|geojson|tif|tiff|csv|kml))",
+            line.strip(),
+            re.IGNORECASE,
+        )
+        if m:
+            candidates.append(m.group(1))
+    if len(candidates) < 2:
+        return []
+    code_lower = code.lower()
+    referenced = [
+        c for c in candidates
+        if c.lower() in code_lower or c.rsplit(".", 1)[0].lower() in code_lower
+    ]
+    missing = [c for c in candidates if c not in referenced]
+    if missing and referenced:
+        return [(
+            "ERROR_CODE_INPUT_MISSED",
+            f"Task supplies {len(candidates)} input files but the code only references "
+            f"{len(referenced)}. Missing: {', '.join(missing)}.",
+            "If every input is required, process each one explicitly.",
+        )]
+    return []
+
+
+# osgeo subpackages we expect to be explicitly imported when used (Case 072).
+# `from osgeo import gdal, ogr, osr` is the canonical form; LLMs sometimes
+# import only a subset and then call into one they forgot.
+_OSGEO_SUBPACKAGES = {"osr", "ogr", "gdal"}
+
+
+def _preflight_collect_imported_names(tree):
+    """Return the set of top-level names introduced by import / from-import."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                # `import gdal` -> 'gdal'; `import osgeo.osr as osr` -> 'osr'.
+                names.add(alias.asname or alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                names.add(alias.asname or alias.name)
+    return names
+
+
+def _preflight_check_double_wrap(tree, dict_var_map):
+    """Reject `QgsVectorLayer(X, ...)` / `QgsRasterLayer(X, ...)` when X
+    is statically known to already be a `QgsMapLayer` (case 023).
+
+    Trigger pattern:
+        result = processing.run("alg", {..., 'OUTPUT': 'TEMPORARY_OUTPUT'})
+        path  = result['OUTPUT']                         # actually a layer obj
+        QgsVectorLayer(path, 'name', 'ogr')              # <-- runtime TypeError
+    or directly:
+        QgsVectorLayer(result['OUTPUT'], 'name', 'ogr')
+
+    This is documented in operation_requirement but the LLM keeps emitting
+    it during debug retries because the variable name is misleading
+    (`joined_layer_path` looks like a path even though it isn't).
+    """
+
+    def _output_returns_layer(call_node):
+        """True iff this processing.run() call's OUTPUT will be a layer obj."""
+        if not isinstance(call_node, ast.Call):
+            return False
+        f = call_node.func
+        if not (isinstance(f, ast.Attribute)
+                and isinstance(f.value, ast.Name)
+                and f.value.id == "processing"
+                and f.attr in ("run", "runAndLoadResults")):
+            return False
+        if len(call_node.args) < 2:
+            return True  # default OUTPUT is memory if omitted
+        params = _preflight_resolve_params(call_node.args[1], dict_var_map)
+        if params is None:
+            return False  # opaque -> don't flag, avoid false positives
+        out_val = params.get("OUTPUT", None)
+        # If OUTPUT key is absent or set to TEMPORARY_OUTPUT / memory: / a
+        # _PREFLIGHT_UNRESOLVED expression (not a path literal), the result
+        # IS a layer object. Otherwise (concrete file path) it's a path str.
+        if out_val is None:
+            return True
+        if isinstance(out_val, str):
+            v = out_val.strip()
+            if v == "" or v == "TEMPORARY_OUTPUT" or v.startswith("memory:"):
+                return True
+            return False
+        # Unresolved (variable / f-string / call) — ambiguous; don't flag.
+        return False
+
+    # Vars holding the dict returned by processing.run that yields a layer.
+    layer_result_vars = set()
+    # Aliases like `path = result['OUTPUT']` — actually a layer.
+    layer_alias_vars = {}  # name -> originating result var
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        # Pattern: result = processing.run(...)
+        if (isinstance(node.value, ast.Call)
+                and _output_returns_layer(node.value)):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    layer_result_vars.add(tgt.id)
+        # Pattern: alias = <known_var>['OUTPUT']
+        elif (isinstance(node.value, ast.Subscript)
+              and isinstance(node.value.value, ast.Name)
+              and node.value.value.id in layer_result_vars):
+            sl = node.value.slice
+            key = None
+            if isinstance(sl, ast.Constant):
+                key = sl.value
+            if key == "OUTPUT":
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        layer_alias_vars[tgt.id] = node.value.value.id
+
+    issues = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if not (isinstance(f, ast.Name)
+                and f.id in ("QgsVectorLayer", "QgsRasterLayer")):
+            continue
+        if not node.args:
+            continue
+        arg = node.args[0]
+        hint = None
+        if isinstance(arg, ast.Name) and arg.id in layer_alias_vars:
+            origin = layer_alias_vars[arg.id]
+            hint = (f"`{f.id}({arg.id}, ...)` — `{arg.id}` was assigned "
+                    f"`{origin}['OUTPUT']` and that is already a "
+                    f"`Qgs{'Vector' if f.id == 'QgsVectorLayer' else 'Raster'}Layer` "
+                    f"object (the run used TEMPORARY_OUTPUT / memory).")
+        elif (isinstance(arg, ast.Subscript)
+              and isinstance(arg.value, ast.Name)
+              and arg.value.id in layer_result_vars
+              and isinstance(arg.slice, ast.Constant)
+              and arg.slice.value == "OUTPUT"):
+            hint = (f"`{f.id}({arg.value.id}['OUTPUT'], ...)` — "
+                    f"`{arg.value.id}['OUTPUT']` is already a layer object "
+                    f"(the run used TEMPORARY_OUTPUT / memory).")
+        elif (isinstance(arg, ast.Call)
+              and _output_returns_layer(arg)):
+            # Inline: QgsVectorLayer(processing.run(...), ...)
+            hint = (f"`{f.id}(processing.run(...), ...)` — the inline run "
+                    f"returns a dict with a layer object at ['OUTPUT']; "
+                    f"you can't pass the dict to {f.id}.")
+        if hint:
+            issues.append((
+                "ERROR_CODE_DOUBLE_WRAP",
+                hint,
+                f"Use the value directly: drop the `{f.id}(...)` wrapper "
+                "and use the variable as-is. If you need to add it to the "
+                "project, call `QgsProject.instance().addMapLayer(<var>)`. "
+                "Re-wrapping a layer in its own constructor raises "
+                "'argument 1 has unexpected type 'Qgs...Layer''.",
+            ))
+    return issues
+
+
+def _preflight_check_addmaplayer_path(tree):
+    """Reject `QgsProject.instance().addMapLayer(<str>)` (Cluster E / case 069).
+
+    `addMapLayer` accepts only a `QgsMapLayer` object. Passing a path string
+    raises 'QgsProject.addMapLayer(): argument 1 has unexpected type str' at
+    runtime, which is not actionable from the LLM's perspective unless we
+    surface the structural mistake here.
+    """
+    issues = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        f = node.func
+        if not (isinstance(f, ast.Attribute) and f.attr == "addMapLayer"):
+            continue
+        if not node.args:
+            continue
+        arg = node.args[0]
+        # String literal (incl. f-string with no formatting) -> definitely wrong
+        bad = False
+        hint = None
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+            bad, hint = True, arg.value[:120]
+        elif isinstance(arg, ast.JoinedStr):
+            bad, hint = True, "<f-string path>"
+        # Name like `output_path` / `path` / a var ending in _path -> warn
+        elif isinstance(arg, ast.Name) and (
+            arg.id.lower().endswith(("_path", "path"))
+            or arg.id.lower() in ("p", "filename")
+        ):
+            bad, hint = True, f"variable `{arg.id}` (looks like a path)"
+        if bad:
+            issues.append((
+                "ERROR_CODE_LAYER_TYPE_MISMATCH",
+                f"`addMapLayer({hint})` is being called with a path/string, "
+                f"but addMapLayer requires a QgsMapLayer object.",
+                "Wrap the path first: `lyr = QgsVectorLayer(path, name, 'ogr')` "
+                "for vector or `QgsRasterLayer(path, name)` for raster, then "
+                "`QgsProject.instance().addMapLayer(lyr)`.",
+            ))
+    return issues
+
+
+def _preflight_check_pyqt5_imports(tree):
+    """Reject `from PyQt5...` / `import PyQt5...` statements outright.
+
+    This QGIS LTR build is Qt6-based; PyQt5 imports raise
+    'PyQt5 classes cannot be imported in a QGIS build based on Qt6.'
+    and abort the entire run. Catching it statically lets the retry loop
+    rewrite the imports before exec().
+    """
+    issues = []
+    for node in ast.walk(tree):
+        bad_module = None
+        if isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            if mod == "PyQt5" or mod.startswith("PyQt5."):
+                bad_module = mod
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "PyQt5" or alias.name.startswith("PyQt5."):
+                    bad_module = alias.name
+                    break
+        if bad_module:
+            issues.append((
+                "ERROR_CODE_PYQT5_FORBIDDEN",
+                f"Code imports `{bad_module}` but this QGIS build is Qt6-based.",
+                f"Replace with the version-independent shim: change "
+                f"`{bad_module}` to `qgis.PyQt{bad_module[len('PyQt5'):]}` "
+                f"(e.g. `from qgis.PyQt.QtCore import QVariant`, "
+                f"`from qgis.PyQt.QtGui import QColor`). NEVER write 'PyQt5' "
+                f"in any import statement.",
+            ))
+    return issues
+
+
+def _preflight_check_osgeo_imports(tree):
+    """Flag uses of `osr.X` / `ogr.X` / `gdal.X` whose name was never imported."""
+    imported = _preflight_collect_imported_names(tree)
+    used = set()
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id in _OSGEO_SUBPACKAGES):
+            used.add(node.value.id)
+    issues = []
+    for name in sorted(used - imported):
+        issues.append((
+            "ERROR_CODE_NAME_NOT_IMPORTED",
+            f"Code uses `{name}.<...>` but never imports `{name}` from osgeo.",
+            f"Add `from osgeo import {name}` "
+            f"(or extend an existing osgeo import, e.g. "
+            f"`from osgeo import gdal, ogr, osr`).",
+        ))
+    return issues
+
+
+def _preflight_autofix_code(code):
+    """Apply text-level rewrites for algorithm IDs that we know are wrong
+    in this Qt6 LTR build (Cluster C/D). Returns (new_code, fixes_applied)
+    where fixes_applied is a list of human-readable descriptions.
+
+    Why text-level and not AST: round-tripping through ast.unparse in 3.12
+    drops f-string formatting, comments, and reflows lines, which makes the
+    debug LLM's diff against the original much noisier. A scoped regex on
+    the literal `processing.run("...:..."` arguments is sufficient because
+    every wrong ID we know about is a string literal at that exact site.
+    """
+    if not isinstance(code, str) or "processing.run" not in code:
+        # Still rewrite imports below.
+        pass
+    fixes = []
+    new_code = code
+
+    # 1) Known bad algorithm IDs (explicit map).
+    for bad, good in _PREFLIGHT_BAD_ALGORITHM_IDS.items():
+        for quote in ('"', "'"):
+            needle = f"processing.run({quote}{bad}{quote}"
+            replacement = f"processing.run({quote}{good}{quote}"
+            if needle in new_code:
+                new_code = new_code.replace(needle, replacement)
+                fixes.append(f"rewrote algorithm ID `{bad}` -> `{good}`")
+            # Also handle runAndLoadResults
+            needle2 = f"processing.runAndLoadResults({quote}{bad}{quote}"
+            replacement2 = f"processing.runAndLoadResults({quote}{good}{quote}"
+            if needle2 in new_code:
+                new_code = new_code.replace(needle2, replacement2)
+                fixes.append(f"rewrote algorithm ID `{bad}` -> `{good}`")
+
+    # 2) Generic grass7:* -> grass:* rewrite for any GRASS module the LLM
+    #    invents under the legacy prefix. The Qt6 LTR build does not register
+    #    ANY grass7:* IDs (verified via processingRegistry()).
+    grass7_pattern = re.compile(
+        r'(processing\.run(?:AndLoadResults)?\(\s*[\'"])grass7:'
+    )
+    if grass7_pattern.search(new_code):
+        new_code, n = grass7_pattern.subn(r'\1grass:', new_code)
+        fixes.append(f"rewrote {n} `grass7:*` algorithm ID(s) -> `grass:*`")
+
+    # 3) PyQt5 import rewrite (Cluster A). The preflight check above raises
+    #    a hard error, but if we can rewrite it deterministically, do so —
+    #    saves an LLM round-trip.
+    pyqt5_from = re.compile(r'^(\s*)from\s+PyQt5(\b|\.[\w.]*)\s+import\s+',
+                            re.MULTILINE)
+    if pyqt5_from.search(new_code):
+        new_code, n = pyqt5_from.subn(r'\1from qgis.PyQt\2 import ', new_code)
+        if n:
+            fixes.append(f"rewrote {n} `from PyQt5...` import(s) -> `from qgis.PyQt...`")
+    pyqt5_import = re.compile(r'^(\s*)import\s+PyQt5(\b|\.[\w.]*)',
+                              re.MULTILINE)
+    if pyqt5_import.search(new_code):
+        new_code, n = pyqt5_import.subn(r'\1import qgis.PyQt\2', new_code)
+        if n:
+            fixes.append(f"rewrote {n} `import PyQt5...` statement(s) -> `import qgis.PyQt...`")
+
+    # 4) Qt6 enum scoping (case 064). PyQt6 / Qt6 moved many enums into a
+    #    nested scope, so legacy attribute access patterns now raise
+    #    `type object 'QPainter' has no attribute 'Antialiasing'` and
+    #    similar. The same translation applies inside qgis.PyQt — autofix
+    #    so the LLM doesn't have to chase these one by one.
+    qt6_enum_rewrites = [
+        # QPainter.RenderHint.*
+        (r"\bQPainter\.Antialiasing\b", "QPainter.RenderHint.Antialiasing"),
+        (r"\bQPainter\.TextAntialiasing\b", "QPainter.RenderHint.TextAntialiasing"),
+        (r"\bQPainter\.SmoothPixmapTransform\b",
+            "QPainter.RenderHint.SmoothPixmapTransform"),
+        (r"\bQPainter\.HighQualityAntialiasing\b",
+            "QPainter.RenderHint.Antialiasing"),
+        (r"\bQPainter\.LosslessImageRendering\b",
+            "QPainter.RenderHint.LosslessImageRendering"),
+        # QImage.Format.*
+        (r"\bQImage\.Format_(ARGB32|RGB32|RGB888|Mono|Indexed8|Grayscale8|"
+         r"ARGB32_Premultiplied|RGBA8888|RGBA8888_Premultiplied|RGB16)\b",
+         r"QImage.Format.Format_\1"),
+        # Qt.AlignmentFlag.*
+        (r"\bQt\.Align(Left|Right|HCenter|Center|Top|Bottom|VCenter|Justify|"
+         r"Absolute|Leading|Trailing)\b",
+         r"Qt.AlignmentFlag.Align\1"),
+        # Qt.GlobalColor.* (rare but seen)
+        (r"\bQt\.(black|white|red|green|blue|cyan|magenta|yellow|"
+         r"darkRed|darkGreen|darkBlue|darkCyan|darkMagenta|darkYellow|gray|darkGray|lightGray|transparent)\b",
+         r"Qt.GlobalColor.\1"),
+    ]
+    qt6_total = 0
+    for pattern, replacement in qt6_enum_rewrites:
+        # Avoid double-rewriting if the code already uses the scoped form.
+        new_code, n = re.subn(pattern, replacement, new_code)
+        # Heuristic guard: don't double-up if the replacement already exists
+        # alongside the original (e.g. "QPainter.RenderHint.Antialiasing"
+        # then we'd match the inner "QPainter.Antialiasing" — fixed by \b).
+        qt6_total += n
+    if qt6_total:
+        fixes.append(f"rewrote {qt6_total} Qt6 enum scope reference(s) "
+                     f"(e.g. QPainter.Antialiasing -> QPainter.RenderHint.Antialiasing)")
+
+    return new_code, fixes
+
+
+def _preflight_validate(code, task="", data_path=""):
+    """
+    Static AST scan over the generated code. Raises RuntimeError with a
+    structured `ERROR_CODE_XXX:` message on the first hard issue, so the
+    auto-debug loop in execute_complete_program receives a precise
+    correction signal. No-op when nothing is wrong (or when the AST cannot
+    parse — syntax errors are left for exec() to surface naturally).
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return
+
+    # Make raw source available to per-call checks that need to look for
+    # inline guard patterns (e.g. assert est_cells < N).
+    global _active_code_text
+    _active_code_text = code
+
+    # Resolve `params_X = {...}` assignments so processing.run("alg", params_X)
+    # can be validated against the actual dict (case 028/029 false-positive).
+    dict_var_map = _preflight_collect_dict_assignments(tree)
+
+    all_issues = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "processing"
+                and func.attr in {"run", "runAndLoadResults"}):
+            continue
+        if not node.args:
+            continue
+        alg = _preflight_literal(node.args[0])
+        if not isinstance(alg, str):
+            continue
+        if len(node.args) >= 2:
+            resolved = _preflight_resolve_params(node.args[1], dict_var_map)
+        else:
+            resolved = {}
+        # `resolved is None` means the params dict was passed as an opaque
+        # expression (e.g. computed in a function, branched, **kwargs, etc.).
+        # In that case we skip "missing required key" checks to avoid the
+        # case 028/029 false positive — the call may still be perfectly
+        # valid at runtime.
+        params_opaque = resolved is None
+        params = resolved if isinstance(resolved, dict) else {}
+        all_issues.extend(_preflight_check_call(
+            alg, params, task, data_path, params_opaque=params_opaque
+        ))
+
+    all_issues.extend(_preflight_check_pyqt5_imports(tree))
+    all_issues.extend(_preflight_check_addmaplayer_path(tree))
+    all_issues.extend(_preflight_check_double_wrap(tree, dict_var_map))
+    all_issues.extend(_preflight_check_osgeo_imports(tree))
+    all_issues.extend(_preflight_check_multi_input(code, data_path))
+
+    if not all_issues:
+        return
+
+    lines = [f"{code_id}: {msg} -> {suggestion}"
+             for code_id, msg, suggestion in all_issues]
+    raise RuntimeError("\n".join(lines))
+
+
 def execute_complete_program(request_id, code: str, try_cnt: int, task: str, model_name: str, reasoning_effort_value:str, documentation_str: str,  data_path,
                              workspace_directory, stream,
                              review=True, reasoning_effort=None, session_context=None) -> (str, str):
@@ -678,6 +1738,21 @@ def execute_complete_program(request_id, code: str, try_cnt: int, task: str, mod
             count += 1
             # Redirect stdout to capture print output
             sys.stdout = output_capture
+
+            # Preflight autofix: rewrite known-bad algorithm IDs (e.g.
+            # native:executesql -> qgis:executesql, grass7:* -> grass:*) and
+            # PyQt5 imports inside the generated source, so the next step sees
+            # corrected code and we don't burn an LLM round-trip on mechanical
+            # fixups.
+            fixed_code, autofixes = _preflight_autofix_code(code)
+            if autofixes:
+                code = fixed_code
+                for fx in autofixes:
+                    print(f"[preflight-autofix] {fx}")
+
+            # Preflight: catch known parameter / algorithm-ID mistakes before
+            # exec so the auto-debug loop gets a structured ERROR_CODE message.
+            _preflight_validate(code, task=task, data_path=str(data_path or ""))
 
             compiled_code = compile(code, 'Complete program', 'exec')
 
@@ -1217,69 +2292,135 @@ def get_token_tracker() -> TokenUsageTracker:
     return _token_tracker
 
 
+def _build_llm_retry_exception_tuple():
+    """Collect transient-network exception classes that should trigger a
+    retry. Built lazily so missing optional packages don't break import.
+    """
+    classes = [ConnectionError, TimeoutError]
+    try:
+        import httpx
+        classes.extend([
+            httpx.RemoteProtocolError, httpx.ReadTimeout, httpx.ReadError,
+            httpx.ConnectError, httpx.ConnectTimeout, httpx.WriteError,
+            httpx.PoolTimeout,
+        ])
+    except Exception:
+        pass
+    try:
+        import httpcore
+        classes.append(httpcore.RemoteProtocolError)
+    except Exception:
+        pass
+    try:
+        import openai
+        for name in ("APIConnectionError", "APITimeoutError",
+                     "InternalServerError"):
+            cls = getattr(openai, name, None)
+            if cls is not None:
+                classes.append(cls)
+    except Exception:
+        pass
+    try:
+        import requests
+        classes.extend([
+            requests.exceptions.ConnectionError,
+            requests.exceptions.Timeout,
+            requests.exceptions.ChunkedEncodingError,
+        ])
+    except Exception:
+        pass
+    return tuple(set(classes))
+
+
+_LLM_RETRYABLE_EXCEPTIONS = _build_llm_retry_exception_tuple()
+_LLM_MAX_ATTEMPTS = 3
+_LLM_RETRY_BASE_SLEEP = 2.0
+
+
 def unified_llm_call(request_id, messages, model_name, stream=False, temperature=1, **kwargs):
     """
     保留原 GIBD 代理、GPT5 reasoning_effort、Ollama 配置、streaming 处理
     仅改造：
     - 使用 create_unified_client() 动态 provider
     - 支持阶段四新增厂商和动态模型列表
+    - 对短暂的网络/流式中断做指数退避重试（case 76 类的
+      `httpx.RemoteProtocolError: peer closed connection ...`）
     """
-    # 调用前：估算 input tokens
-    input_tokens = _token_tracker.count_messages_tokens(messages)
+    import time as _time
 
-    # 获取 provider 和 client
-    client, provider = create_unified_client(model_name)
-    model_kwargs = kwargs.copy()
-    if 'reasoning_effort' in kwargs and model_name not in ['gpt-5','gpt-5.1','gpt-5.2']:
-        model_kwargs.pop('reasoning_effort')
+    last_error = None
+    for attempt in range(1, _LLM_MAX_ATTEMPTS + 1):
+        try:
+            # 调用前：估算 input tokens
+            input_tokens = _token_tracker.count_messages_tokens(messages)
 
-    response = provider.generate_completion(
-        request_id=request_id,
-        client=client,
-        model=model_name,
-        messages=messages,
-        stream=stream,
-        temperature=temperature,
-        **model_kwargs
-    )
+            # 获取 provider 和 client
+            client, provider = create_unified_client(model_name)
+            model_kwargs = kwargs.copy()
+            if 'reasoning_effort' in kwargs and model_name not in ['gpt-5','gpt-5.1','gpt-5.2']:
+                model_kwargs.pop('reasoning_effort')
 
-    # Streaming 输出处理
-    if stream:
-        out = ''
-        for chunk in response:
-            try:
-                content = chunk.choices[0].delta.content
-                if content:
-                    print(content, end="")
-                    out += content
-            except (IndexError, AttributeError):
-                # 兼容非标准流式响应（如 GIBD 代理返回的纯字符串）
-                if isinstance(chunk, str):
-                    print(chunk, end="")
-                    out += chunk
-        output_tokens = _token_tracker._estimate_tokens(out)
-        _token_tracker.record_call(model_name, input_tokens, output_tokens)
-        return out
-    else:
-        # 非流式
-        if hasattr(response, 'choices') and response.choices:
-            result = response.choices[0].message.content
-        elif isinstance(response, str):
-            result = response.strip()
-        else:
-            result = str(response)
-        # 非流式：优先用 response.usage（OpenAI 直连时精确）
-        if hasattr(response, 'usage') and response.usage:
-            exact_in = getattr(response.usage, 'prompt_tokens', None)
-            exact_out = getattr(response.usage, 'completion_tokens', None)
-            if exact_in is not None and exact_out is not None:
-                input_tokens, output_tokens = exact_in, exact_out
+            response = provider.generate_completion(
+                request_id=request_id,
+                client=client,
+                model=model_name,
+                messages=messages,
+                stream=stream,
+                temperature=temperature,
+                **model_kwargs
+            )
+
+            # Streaming 输出处理
+            if stream:
+                out = ''
+                for chunk in response:
+                    try:
+                        content = chunk.choices[0].delta.content
+                        if content:
+                            print(content, end="")
+                            out += content
+                    except (IndexError, AttributeError):
+                        # 兼容非标准流式响应（如 GIBD 代理返回的纯字符串）
+                        if isinstance(chunk, str):
+                            print(chunk, end="")
+                            out += chunk
+                output_tokens = _token_tracker._estimate_tokens(out)
+                _token_tracker.record_call(model_name, input_tokens, output_tokens)
+                return out
             else:
-                output_tokens = _token_tracker._estimate_tokens(result)
-        else:
-            output_tokens = _token_tracker._estimate_tokens(result)
-        _token_tracker.record_call(model_name, input_tokens, output_tokens)
-        return result
+                # 非流式
+                if hasattr(response, 'choices') and response.choices:
+                    result = response.choices[0].message.content
+                elif isinstance(response, str):
+                    result = response.strip()
+                else:
+                    result = str(response)
+                # 非流式：优先用 response.usage（OpenAI 直连时精确）
+                if hasattr(response, 'usage') and response.usage:
+                    exact_in = getattr(response.usage, 'prompt_tokens', None)
+                    exact_out = getattr(response.usage, 'completion_tokens', None)
+                    if exact_in is not None and exact_out is not None:
+                        input_tokens, output_tokens = exact_in, exact_out
+                    else:
+                        output_tokens = _token_tracker._estimate_tokens(result)
+                else:
+                    output_tokens = _token_tracker._estimate_tokens(result)
+                _token_tracker.record_call(model_name, input_tokens, output_tokens)
+                return result
+        except _LLM_RETRYABLE_EXCEPTIONS as net_err:
+            last_error = net_err
+            if attempt >= _LLM_MAX_ATTEMPTS:
+                break
+            backoff = _LLM_RETRY_BASE_SLEEP * (2 ** (attempt - 1))
+            print(
+                f"\n[unified_llm_call] transient network error on attempt "
+                f"{attempt}/{_LLM_MAX_ATTEMPTS}: {type(net_err).__name__}: "
+                f"{net_err}. Retrying in {backoff:.1f}s...",
+                flush=True,
+            )
+            _time.sleep(backoff)
+
+    raise last_error
     
 def GIBD_Service_call(api_key, service_name, request_id, model_name, messages, stream, temperature, **kwargs):
     url = f"https://www.gibd.online/api/openai/{api_key}"
@@ -2597,7 +3738,7 @@ def see_vector(file_path):
     """Read vector metadata using QGIS native API (avoids pyarrow/geopandas crash)."""
     try:
         from qgis.core import QgsVectorLayer, QgsWkbTypes
-        from PyQt5.QtCore import QVariant
+        from qgis.PyQt.QtCore import QVariant
         layer = QgsVectorLayer(file_path, "temp_inspect", "ogr")
         if not layer.isValid():
             return f"(Failed to open: {file_path})"

@@ -1,28 +1,33 @@
 tool_ID = "native:addxyfields"
 
-tool_name = "Add XY Coordinates"
+tool_name = "Add X/Y fields to layer"
 
-brief_description = """Adds X and Y coordinate fields to a point vector layer. Equivalent to ArcGIS Add XY Coordinates."""
+brief_description = """Adds X and Y (or longitude/latitude) fields to a vector layer's attribute table. The X/Y values can be calculated in a CRS different from the layer's own CRS (e.g. add lon/lat fields to a layer stored in a projected CRS).
 
-parameters = """INPUT: Input point layer. Type: [vector: point]
-CRS: CRS for coordinate values. Type: [crs]
-PREFIX: Prefix for coordinate field names. Type: [string] Default: ''
-OUTPUT: Output layer with XY fields. Type: [vector: point]"""
+NOTE: the legacy ID `native:addxyfieldstolayer` does NOT exist in QGIS 3.40 — always use `native:addxyfields`."""
+
+parameters = """INPUT: Input vector layer. Type: [vector: any]
+CRS: CRS used to compute the X/Y values. Type: [crs] Default: EPSG:4326
+PREFIX: Prefix added to the new field names (optional, leave '' for default x/y). Type: [string] Default: ''
+OUTPUT: Output layer with the two new double fields (x, y). Type: [vector: any]"""
 
 code_example = """import processing
 from qgis.core import QgsProject, QgsVectorLayer
 
-def add_xy():
+def add_xy_fields():
+    input_path = 'D:/Data/points.shp'
+    output_path = 'D:/Output/points_xy.shp'
+
     params = {
-        'INPUT': 'D:/Data/points.shp',
-        'CRS': 'EPSG:4326',
+        'INPUT': input_path,
+        'CRS': 'EPSG:4326',     # compute X/Y as longitude/latitude
         'PREFIX': '',
-        'OUTPUT': 'D:/Output/points_xy.shp'
+        'OUTPUT': output_path,
     }
-    
+
     result = processing.run("native:addxyfields", params)
-    
+
     layer = QgsVectorLayer(result['OUTPUT'], 'Points with XY', 'ogr')
     QgsProject.instance().addMapLayer(layer)
 
-add_xy()"""
+add_xy_fields()"""

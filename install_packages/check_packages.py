@@ -3,10 +3,37 @@ import platform
 import sys
 import importlib
 import subprocess
-import pkg_resources
+from importlib.metadata import distributions, version, PackageNotFoundError
 from qgis.PyQt.QtWidgets import QMessageBox, QProgressDialog, QApplication
 from qgis.PyQt.QtCore import QSettings, QThread, pyqtSignal, Qt
 from concurrent.futures import ThreadPoolExecutor
+
+
+def _installed_keys():
+    """Return a set of installed distribution names, normalized to lower_with_underscores."""
+    names = set()
+    for dist in distributions():
+        name = dist.metadata.get("Name")
+        if name:
+            names.add(name.lower().replace("-", "_"))
+    return names
+
+
+def _parse_version(v):
+    """Parse a version string into a comparable object. Uses packaging if available,
+    falls back to a tuple-of-ints comparison."""
+    try:
+        from packaging.version import Version
+        return Version(v)
+    except Exception:
+        # Best-effort fallback
+        parts = []
+        for token in v.replace("-", ".").split("."):
+            try:
+                parts.append(int(token))
+            except ValueError:
+                parts.append(0)
+        return tuple(parts)
 
 
 
@@ -32,7 +59,7 @@ def check_library(library_info):
        return (library, False)  # Library is installed
    except ImportError:
 
-       installed = {pkg.key.lower().replace("-", "_") for pkg in pkg_resources.working_set}
+       installed = _installed_keys()
        normalized_name = library.lower().replace("-", "_")
        if normalized_name in installed:
            return (library, False)  # Installed but not importable
@@ -45,7 +72,7 @@ def check_library_installed_only(distribution_name):
     This does not check if the module is importable.
     Returns (distribution_name, is_missing: bool)
     """
-    installed = {pkg.key for pkg in pkg_resources.working_set}
+    installed = _installed_keys()
     normalized_name = distribution_name.lower().replace("-", "_")
 
     if normalized_name in installed:
@@ -113,41 +140,33 @@ def get_installed_version(package_name):
     Returns version string or None if not installed.
     Tries multiple methods to handle different package name formats.
     """
-    # Method 1: Try importlib.metadata (most reliable)
+    # Method 1: Try importlib.metadata directly
     try:
         return version(package_name)
-    except:
+    except PackageNotFoundError:
+        pass
+    except Exception:
         pass
 
-    # Method 2: Try pkg_resources with different name normalizations
+    # Method 2: Try with underscores and hyphens swapped
     try:
-        dist = pkg_resources.get_distribution(package_name)
-        return dist.version
-    except:
-        pass
-
-    # Method 3: Try with underscores and hyphens swapped
-    try:
-        normalized = package_name.replace('-', '_')
-        return version(normalized)
-    except:
+        return version(package_name.replace('-', '_'))
+    except Exception:
         pass
 
     try:
-        normalized = package_name.replace('_', '-')
-        return version(normalized)
-    except:
+        return version(package_name.replace('_', '-'))
+    except Exception:
         pass
 
-    # Method 4: Try all installed packages (fallback)
+    # Method 3: Scan all installed distributions (fallback)
     try:
-        installed = {pkg.key for pkg in pkg_resources.working_set}
-        normalized_name = package_name.lower().replace("-", "_")
-        for pkg_key in installed:
-            if pkg_key.lower().replace("-", "_") == normalized_name:
-                dist = pkg_resources.get_distribution(pkg_key)
+        normalized_target = package_name.lower().replace("-", "_")
+        for dist in distributions():
+            name = dist.metadata.get("Name")
+            if name and name.lower().replace("-", "_") == normalized_target:
                 return dist.version
-    except:
+    except Exception:
         pass
 
     return None
@@ -223,9 +242,10 @@ def compare_versions(v1, v2):
     Returns: -1 if v1 < v2, 0 if equal, 1 if v1 > v2
     """
     try:
-        return (pkg_resources.parse_version(v1) > pkg_resources.parse_version(v2)) - \
-               (pkg_resources.parse_version(v1) < pkg_resources.parse_version(v2))
-    except:
+        p1 = _parse_version(v1)
+        p2 = _parse_version(v2)
+        return (p1 > p2) - (p1 < p2)
+    except Exception:
         return 0
 
 
@@ -261,7 +281,7 @@ def install_specific_versions(requirements_file, show_progress=True):
         progress = None
         if show_progress:
             progress = QProgressDialog("Installing packages...", None, 0, 0)
-            progress.setWindowModality(Qt.WindowModal)
+            progress.setWindowModality(Qt.WindowModality.WindowModal)
             progress.show()
 
         try:
@@ -309,9 +329,9 @@ def check_and_install_with_versions(requirements_file):
 
             # Display message and ask user
             reply = QMessageBox.question(None, 'Version Mismatch', message,
-                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
 
-            if reply == QMessageBox.Yes:
+            if reply == QMessageBox.StandardButton.Yes:
                 # Install with correct versions
                 print(f"Installing packages with correct versions: {packages_to_fix}")
                 subprocess.check_call(['python3', '-m', 'pip', 'install', '--force-reinstall'] + packages_to_fix)

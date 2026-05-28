@@ -95,7 +95,7 @@ OUTPUT - Default: [Create Temporary Layer], specify the output vector layer for 
 attribute_join = r"""
 ```
 from qgis.core import QgsVectorLayer, QgsProject, QgsVectorLayerJoinInfo, QgsVectorFileWriter
-from PyQt5.QtCore import QVariant
+from qgis.PyQt.QtCore import QVariant
 
 # Load PA tract boundary shapefile
 # tract_boundary_path = 'D:/LLM_Geo_QGIS/Case_Study1/data/tract_42_EPSG4326/tract_42_EPSG4326.shp'

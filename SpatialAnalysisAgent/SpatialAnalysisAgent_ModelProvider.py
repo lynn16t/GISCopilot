@@ -13,9 +13,10 @@ import configparser
 #模型支持   
 PROVIDER_MODELS = {
     "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-5", "gpt-5.1", "o1", "o3-mini"],
-    "deepseek": ["deepseek-chat", "deepseek-reasoner"],
+    "deepseek": ["deepseek-chat", "deepseek-reasoner", "deepseek-v4-flash", "deepseek-v4-pro"],
     "anthropic": ["claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"],
     "gemini": ["gemini-2.5-pro", "gemini-2.5-flash"],
+    "openrouter": ["Claude-Opus-4.6", "GPT-5.5"],
     "gibd": ["gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-5", "gpt-5.1", "o1", "o3-mini"],
     "minimax": ["MiniMax-Text-01", "abab6.5s-chat"],
     "ollama": [],  # 动态获取本地模型
@@ -28,6 +29,7 @@ PROVIDER_MODELS = {
 current_script_dir = os.path.dirname(os.path.abspath(__file__))
 if current_script_dir not in sys.path:
     sys.path.append(current_script_dir)
+
 
 
 class ModelProvider(ABC):
@@ -211,6 +213,16 @@ class DeepSeekProvider(OpenAIProvider):
         self.api_key = api_key
         self.base_url = "https://api.deepseek.com"
         return OpenAI(api_key=api_key, base_url="https://api.deepseek.com")
+    
+class OpenRouterProvider(OpenAIProvider):
+    """OpenRouter Provider 兼容 OpenAI协议"""
+    def create_client(self, config):
+        from openai import OpenAI
+        api_key = config.get('api_key', '')
+        self.api_key = api_key
+        self.base_url = "https://openrouter.ai/api/v1"
+        return OpenAI(api_key=api_key, base_url=self.base_url)
+        
 # 新增
 class AnthropicProvider(ModelProvider):
     def create_client(self, config):
@@ -430,6 +442,7 @@ class ModelProviderFactory:
     _providers = {
         'openai': OpenAIProvider(),
         'deepseek': DeepSeekProvider(),
+        'openrouter': OpenRouterProvider(),
         'anthropic': AnthropicProvider(),
         'gemini': GeminiProvider(),
         'ollama': OllamaProvider(),
@@ -437,6 +450,7 @@ class ModelProviderFactory:
         'gibd': OpenAIProvider(),
         'glm': OllamaProvider(),
         'qwen': OllamaProvider(),
+        
     }
     _active_provider = None
 
@@ -452,6 +466,8 @@ class ModelProviderFactory:
         'o3-mini': 'openai',
         'deepseek-chat': 'deepseek',
         'deepseek-reasoner': 'deepseek',
+        'deepseek-v4-flash': 'deepseek',
+        'deepseek-v4-pro': 'deepseek',
         'gpt-oss-20b': 'ollama',
         'llama3.1:70b': 'ollama',
         'llama4:latest': 'ollama',
@@ -462,6 +478,8 @@ class ModelProviderFactory:
         'mistral:latest': 'ollama',
         'llama2:latest': 'ollama',
         'llama3.2:1b': 'ollama',
+        'Claude-Opus-4.6': 'openrouter',
+        'GPT-5.5': 'openrouter',
     }
     
     @classmethod
@@ -492,7 +510,9 @@ class ModelProviderFactory:
 def detect_provider(api_key: str) -> dict:
     result = {"provider":"unknown","base_url":None,"models":[],"display_name":"未知"}
     try:
-        if api_key.startswith("sk-ant-"):
+        if api_key.startswith("sk-or-"): # <--- 新增：拦截 OpenRouter 的 Key
+            result.update({"provider":"openrouter","base_url":"https://openrouter.ai/api/v1","models":PROVIDER_MODELS["openrouter"],"display_name":"OpenRouter"})
+        elif api_key.startswith("sk-ant-"):
             result.update({"provider":"anthropic","base_url":"https://api.anthropic.com","models":PROVIDER_MODELS["anthropic"],"display_name":"Anthropic"})
         elif api_key.startswith("sk-"):
             try:
@@ -535,7 +555,9 @@ def load_model_config():
 
     if api_key:
         # 根据前缀快速判断 key 归属（不发网络请求）
-        if api_key.startswith('gibd-services-'):
+        if api_key.startswith('sk-or-'):                               # <--- 新增这块
+            model_config['openrouter'] = {'api_key': api_key}
+        elif api_key.startswith('gibd-services-'):
             # GIBD 代理 key：可以转发多种模型
             for pname in ['openai', 'deepseek', 'gpt5', 'gibd',
                           'anthropic', 'gemini', 'minimax', 'glm', 'qwen']:

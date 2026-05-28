@@ -34,7 +34,7 @@ documentation = {
 Python code format:
 ```
 from qgis.core import QgsVectorLayer, QgsProject, QgsRasterLayer, QgsCoordinateReferenceSystem
-from PyQt5.QtCore import QVariant
+from qgis.PyQt.QtCore import QVariant
 import processing
 def IDW_Interpolation(input_layer_path, attribute):
     # Load the input vector layer
@@ -104,7 +104,7 @@ IDW_Interpolation(input_layer_path, attribute)
             ----------------
     Python code format:
 ```
-    from PyQt5.QtCore import QVariant
+    from qgis.PyQt.QtCore import QVariant
     import processing
     def TIN_Interpolation(input_layer_path, attribute):
         # Load the input vector layer

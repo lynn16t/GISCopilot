@@ -26,7 +26,7 @@ OUTPUT: Raster layer of interpolated values. One of- Save to a Temporary File ('
 
 code_example = '''
 from qgis.core import QgsVectorLayer, QgsProject, QgsRasterLayer, QgsCoordinateReferenceSystem
-from PyQt5.QtCore import QVariant
+from qgis.PyQt.QtCore import QVariant
 import processing
 def IDW_Interpolation(input_layer_path, attribute):
     # Load the input vector layer

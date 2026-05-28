@@ -24,7 +24,7 @@ class ErrorPatternMatcher:
                     "Check if the required library is installed",
                     "Use alternative import statements",
                     "Import from correct module path",
-                    "Try importing from PyQt5 instead of qgis.PyQt",
+                    "REPLACE every `from PyQt5...` / `import PyQt5...` with `from qgis.PyQt...` (this is a Qt6 QGIS build; PyQt5 imports always fail)",
                     "Restart QGIS if DLL issues persist"
                 ],
                 "severity": "high",

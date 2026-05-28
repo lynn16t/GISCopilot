@@ -7,7 +7,8 @@ INPUT: Vector features. Input vector layer.. Type: [vector: any]
 OUTPUT: Saved features. Specify the file to save the features to. One of: Save to a Temporary File Save to File…. Type: [same as input] Default: [Save to temporary file] 
 LAYER_NAME: Layer name Optional. Name to use for the output layer. Type: [string] 
 DATASOURCE_OPTIONS: GDAL dataset options Optional. GDAL dataset creation options of the output format.Separate individual options with semicolons.. Type: [string] 
-LAYER_OPTIONS: GDAL layer options Optional. GDAL layer creation options of the output format.Separate individual options with semicolons.. Type: [string]ACTION_ON_EXISTING_FILE: Action to take on pre-existing file. How to manage existing features. Valid methods are: 0 — Create or overwrite file1 — Create or overwrite layer2 — Append features to existing layer, but do not create new fields3 — Append features to existing layer, and create new fields if needed. Type: [enumeration] Default: 0 
+LAYER_OPTIONS: GDAL layer options Optional. GDAL layer creation options of the output format.Separate individual options with semicolons.. Type: [string]
+ACTION_ON_EXISTING_FILE: Action to take on pre-existing file Optional. How to manage existing features. Valid methods are: 0 — Create or overwrite file, 1 — Create or overwrite layer, 2 — Append features to existing layer (do not create new fields), 3 — Append features to existing layer (create new fields if needed). Type: [enumeration] Default: 0
 OUTPUT: Saved features. Vector layer with the saved features.. Type: [same as input] 
 FILE_PATH: File name and path. Output file name and path.. Type: [string] 
 LAYER_NAME: Layer name. Name of the layer, if any.. Type: [string]

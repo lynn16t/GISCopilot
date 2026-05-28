@@ -1,33 +1,41 @@
 tool_ID = "gdal:rasterize_over"
+
 tool_name = "Rasterize (overwrite with attribute)"
-brief_description = "Overwrites a raster layer with values from a vector layer. New values are assigned based on the attribute value of the overlapping vector feature."
-full_description = """Overwrites a raster layer with values from a vector layer. New values are assigned based on the attribute value of the overlapping vector feature.
-This algorithm is derived from the GDAL rasterize utility ."""
-parameters = """
-INPUT: Input layer. Input vector layer. Type: [vector: any] 
-INPUT_RASTER: Input raster layer. Input raster layer. Type: [raster] 
-FIELD: Field to use for a burn-in value Optional. Defines the attribute field to use to set the pixels values. Type: [tablefield: numeric] 
-ADD: Add burn in values to existing raster values. If False, pixels are assigned the selected field’s value.If True, the selected field’s value is added to the valueof the input raster layer.. Type: [boolean] Default: False 
-EXTRA: Additional command-line parameters Optional. Add extra GDAL command line options. Type: [string] Default: ‘’ outputs = 
-OUTPUT: Rasterized. The overwritten input raster layer. Type: [raster]
-"""
-code_example = """
-import processing
 
-def rasterize_over():
-    input_vector_path = 'D:/input_vector.shp'
-    input_raster_path = 'D:/input_raster.tif'
-    output_path = 'D:/output_raster.tif'
-    
-    parameters = {
-        'INPUT': input_vector_path,  # Input vector layer
-        'INPUT_RASTER': input_raster_path,  # Input raster layer
-        'FIELD': '',  # Field to use for a burn-in value Optional, leave empty
-        'ADD': False,  # Add burn in values to existing raster values. Options: [True, False]
-        'EXTRA': '',  # Additional command-line parameters Optional, leave empty
-        'OUTPUT': output_path
+brief_description = """Overwrites pixels of an existing raster layer with values taken from a vector layer's attribute. New values are assigned based on the attribute value of the overlapping vector feature.
+
+IMPORTANT: this algorithm modifies the INPUT_RASTER FILE IN PLACE — it does NOT take an OUTPUT parameter and does NOT write a new file. After it runs, INPUT_RASTER on disk has been mutated.
+- If you need a separate output file, copy the source first with `gdal:translate` and then run this on the copy.
+- If you want to bake a vector layer to a brand-new raster, use `gdal:rasterize` instead.
+
+Also note: the LLM-friendly display name is "Rasterize (overwrite with attribute)" but the algorithm ID is `gdal:rasterize_over` (NOT `gdal:rasterize_overwrite_with_attribute`)."""
+
+parameters = """INPUT: Input vector layer (provides geometries to burn). Type: [vector: any]
+INPUT_RASTER: Existing raster layer that will be MODIFIED IN PLACE. Type: [raster]
+FIELD: Attribute field in INPUT used as the burn value. REQUIRED, must be an existing numeric field. Type: [tablefield: numeric]
+ADD: If True, the field value is ADDED to the existing raster pixel value; if False, it overwrites. Type: [boolean] Default: False
+EXTRA: Additional GDAL command-line options. Optional. Type: [string] Default: ''"""
+
+code_example = """import processing
+from qgis.core import QgsProject, QgsRasterLayer
+
+def rasterize_over_attribute():
+    input_vector = 'D:/Data/parcels.shp'
+    target_raster = 'D:/Data/landcover.tif'   # this file will be MODIFIED IN PLACE
+
+    params = {
+        'INPUT': input_vector,
+        'INPUT_RASTER': target_raster,
+        'FIELD': 'class_id',     # must be an existing numeric field on INPUT
+        'ADD': False,
+        'EXTRA': '',
+        # NB: there is NO 'OUTPUT' key — the algorithm overwrites INPUT_RASTER in place
     }
-    
-    result = processing.run(\"""gdal:rasterize_over\", parameters)
 
-rasterize_over()"""
+    processing.run("gdal:rasterize_over", params)
+
+    # The path is unchanged; reload to see the modified raster
+    layer = QgsRasterLayer(target_raster, 'Landcover (overwritten)', 'gdal')
+    QgsProject.instance().addMapLayer(layer)
+
+rasterize_over_attribute()"""

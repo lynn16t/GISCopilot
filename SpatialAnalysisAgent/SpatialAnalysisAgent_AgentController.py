@@ -22,12 +22,13 @@ import sys
 import ast
 import time
 import uuid
+import json
 import traceback
 import io
 from enum import Enum, auto
 from typing import Optional, Dict, Any, List
 
-from PyQt5.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
+from qgis.PyQt.QtCore import QObject, QThread, pyqtSignal, pyqtSlot
 
 # Phase 4: 输出解析和风控门
 from SpatialAnalysisAgent_OutputParser import (
@@ -222,6 +223,10 @@ class AgentController(QObject):
         self.model_name: str = ""
         self.is_review: bool = False
         self.reasoning_effort_value: str = "medium"
+        # When True, _run_planning step 6 (workflow graph) is skipped entirely:
+        # no LLM call to build the NetworkX plan, no pyvis HTML render. Code
+        # generation does not depend on the graph, so this is purely a perf knob.
+        self.skip_graph: bool = False
 
         # 分析阶段产出（暂存，供执行阶段使用）
         self._analysis_result: Dict[str, Any] = {}
@@ -669,7 +674,6 @@ class AgentController(QObject):
             print(f"Extracted tools: {selected_tools}")
 
             # 保存完整的结构化计划到 SessionContext
-            import json
             plan_text = json.dumps(structured_plan, indent=2, ensure_ascii=False)
             self.session.set_plan(plan_text)
 
@@ -721,46 +725,54 @@ class AgentController(QObject):
             return
 
         # ====== 步骤 6: 工作流图 ======
-        self.status_update.emit("正在生成工作流图...")
-        print('\n---------- AI IS GENERATING THE GEOPROCESSING'
-              ' WORKFLOW FOR THE TASK ----------\n')
-
-        script_directory = os.path.dirname(os.path.abspath(__file__))
-        save_dir = os.path.join(script_directory, "graphs")
-        if not os.path.exists(save_dir):
-            os.makedirs(save_dir)
-
-        graph_file_path = os.path.join(save_dir, f"{task_name}.graphml")
+        # skip_graph: 跳过整个 LLM-generate-NetworkX + pyvis-render-HTML 流程，
+        # 节省一次 LLM call + 渲染时间。下游代码生成不消费 graph，可安全跳过。
         task_explanation = task_breakdown
-
-        graph_response, code_for_graph, solution_graph_dict = \
-            helper.generate_graph_response(
-                request_id=self._request_id,
-                task=self.task,
-                task_explanation=task_explanation,
-                data_path=data_overview,
-                graph_file_path=graph_file_path,
-                model_name=operation_model,
-                stream=True,
-                execute=True,
-                reasoning_effort=self.reasoning_effort_value)
-
         html_graph_path = ""
-        if solution_graph_dict and solution_graph_dict.get('graph'):
-            G = solution_graph_dict['graph']
-            nt = helper.show_graph(G)
-            html_graph_path = os.path.join(
-                save_dir, f"{task_name}_solution_graph.html")
-            counter = 1
-            while os.path.exists(html_graph_path):
-                html_graph_path = os.path.join(
-                    save_dir,
-                    f"{task_name}_solution_graph_{counter}.html")
-                counter += 1
-            nt.save_graph(html_graph_path)
-            print(f"GRAPH_SAVED:{html_graph_path}")
+
+        if self.skip_graph:
+            self.status_update.emit("跳过工作流图生成（skip_graph=True）")
+            print('\n---------- SKIPPING WORKFLOW GRAPH '
+                  '(skip_graph=True) ----------\n')
         else:
-            print("Failed to generate or load solution graph")
+            self.status_update.emit("正在生成工作流图...")
+            print('\n---------- AI IS GENERATING THE GEOPROCESSING'
+                  ' WORKFLOW FOR THE TASK ----------\n')
+
+            script_directory = os.path.dirname(os.path.abspath(__file__))
+            save_dir = os.path.join(script_directory, "graphs")
+            if not os.path.exists(save_dir):
+                os.makedirs(save_dir)
+
+            graph_file_path = os.path.join(save_dir, f"{task_name}.graphml")
+
+            graph_response, code_for_graph, solution_graph_dict = \
+                helper.generate_graph_response(
+                    request_id=self._request_id,
+                    task=self.task,
+                    task_explanation=task_explanation,
+                    data_path=data_overview,
+                    graph_file_path=graph_file_path,
+                    model_name=operation_model,
+                    stream=True,
+                    execute=True,
+                    reasoning_effort=self.reasoning_effort_value)
+
+            if solution_graph_dict and solution_graph_dict.get('graph'):
+                G = solution_graph_dict['graph']
+                nt = helper.show_graph(G)
+                html_graph_path = os.path.join(
+                    save_dir, f"{task_name}_solution_graph.html")
+                counter = 1
+                while os.path.exists(html_graph_path):
+                    html_graph_path = os.path.join(
+                        save_dir,
+                        f"{task_name}_solution_graph_{counter}.html")
+                    counter += 1
+                nt.save_graph(html_graph_path)
+                print(f"GRAPH_SAVED:{html_graph_path}")
+            else:
+                print("Failed to generate or load solution graph")
 
         self.graph_ready.emit(html_graph_path)
 
@@ -1093,7 +1105,6 @@ class AgentController(QObject):
             "revision_note": f"根据用户反馈修改: {user_feedback}",
         }
 
-        import json
         self.session.set_plan(json.dumps(revised_plan, indent=2, ensure_ascii=False, default=str))
         self._analysis_result = revised_plan
         self.session.add_message(
@@ -1122,6 +1133,7 @@ class AgentController(QObject):
         import SpatialAnalysisAgent_Constants as constants
         import SpatialAnalysisAgent_Codebase as codebase
         import SpatialAnalysisAgent_ToolsDocumentation as ToolsDocumentation
+        import SpatialAnalysisAgent_helper as helper
 
         current_script_dir = os.path.dirname(os.path.abspath(__file__))
         Tools_Documentation_dir = os.path.join(
@@ -1170,6 +1182,16 @@ class AgentController(QObject):
 
         print(f"List of selected tool IDs: {selected_tool_IDs_list}")
         combined_documentation_str = '\n'.join(all_documentation)
+
+        # Prepend a strict parameter-name whitelist parsed from the TOML
+        # docs. This is the primary defense against parameter-key
+        # hallucinations (e.g. OVERLAY vs INTERSECT for lineintersections).
+        whitelist_block = helper.build_parameter_whitelist_block(
+            selected_tool_IDs_list)
+        if whitelist_block:
+            combined_documentation_str = (
+                whitelist_block + "\n" + combined_documentation_str)
+
         print(combined_documentation_str)
 
         return selected_tool_IDs_list, combined_documentation_str
@@ -1304,7 +1326,6 @@ class AgentController(QObject):
             combined_documentation_str = ""
 
         # --- 4. 保存到 session ---
-        import json
         plan_text = json.dumps(structured_plan, indent=2, ensure_ascii=False)
         self.session.set_plan(plan_text)
 
@@ -1568,13 +1589,15 @@ class AgentController(QObject):
 
     def set_task_params(self, task: str, data_path: str,
                         workspace_directory: str, model_name: str,
-                        is_review: bool, reasoning_effort_value: str):
+                        is_review: bool, reasoning_effort_value: str,
+                        skip_graph: bool = False):
         self.task = task
         self.data_path = data_path
         self.workspace_directory = workspace_directory
         self.model_name = model_name
         self.is_review = is_review
         self.reasoning_effort_value = reasoning_effort_value
+        self.skip_graph = skip_graph
 
     def reset(self):
         self._is_running = False
