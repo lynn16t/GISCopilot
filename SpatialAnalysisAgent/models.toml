@@ -1,0 +1,127 @@
+# ===========================================================================
+# 模型配置文件
+# ===========================================================================
+# 你可以直接在这里增删模型、修改 base_url、调整 API 密钥前缀。
+# 修改后请重启 QGIS 让插件重新加载。
+#
+# 每个 [providers.<provider>] 节点包含:
+#   display_name : 在 UI 上的显示名
+#   base_url     : 该 provider 的 API 端点
+#   key_prefix   : 用于自动识别 API 密钥的前缀(可填多个)
+#   models       : 该 provider 支持的模型列表(下拉框就读这里)
+#
+# 节末的 [overrides] 用于"模型 → provider"的特殊路由(一般不用动)。
+# ===========================================================================
+
+[providers.openai]
+display_name = "OpenAI"
+base_url     = "https://api.openai.com/v1"
+key_prefix   = ["sk-"]
+models = [
+    "gpt-5.2",
+    "gpt-5.1",
+    "gpt-5",
+    "gpt-4o",
+    "gpt-4o-mini",
+    "o3-mini",
+    "o1",
+]
+
+[providers.deepseek]
+display_name = "DeepSeek"
+base_url     = "https://api.deepseek.com"
+key_prefix   = []                       # DeepSeek 也用 sk-,靠联网探测识别
+models = [
+    "deepseek-chat",
+    "deepseek-reasoner",
+]
+
+[providers.anthropic]
+display_name = "Anthropic"
+base_url     = "https://api.anthropic.com"
+key_prefix   = ["sk-ant-"]
+# Claude 4.X 系列。模型 ID 取自 Anthropic 官方文档:
+#   https://docs.anthropic.com/en/docs/about-claude/models
+models = [
+    "claude-opus-4-7",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+    "claude-opus-4-5",
+    "claude-sonnet-4-5",
+    "claude-opus-4-1",
+    "claude-sonnet-4-20250514",
+]
+
+[providers.openrouter]
+display_name = "OpenRouter"
+base_url     = "https://openrouter.ai/api/v1"
+key_prefix   = ["sk-or-"]
+# OpenRouter 的真实模型名是 "厂商/模型" 这种带斜杠的 slug。
+# 顶部几款是最新旗舰;后面保留几款稳定可用 / 不易触发地区限制的备选。
+# 若某个 slug 拼写不对 OpenRouter 会返回 404,看控制台报错改即可。
+models = [
+    "anthropic/claude-opus-4.7",
+    "anthropic/claude-sonnet-4.6",
+    "google/gemini-3.1-pro",
+    "openai/gpt-5.2",
+    "openai/gpt-5.1",
+    "openai/gpt-5",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-flash",
+    "deepseek/deepseek-chat",
+    "deepseek/deepseek-r1",
+    "qwen/qwen-2.5-72b-instruct",
+    "meta-llama/llama-3.3-70b-instruct",
+]
+
+[providers.gemini]
+display_name = "Google Gemini"
+# 注:这里用 OpenAI 兼容端点(/v1beta/openai/),Provider 实现按 OpenAI SDK 调。
+base_url     = "https://generativelanguage.googleapis.com/v1beta/openai/"
+key_prefix   = ["AIza"]
+models = [
+    "gemini-3.1-pro",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
+]
+
+[providers.minimax]
+display_name = "MiniMax"
+base_url     = "https://api.minimax.chat/v1"
+key_prefix   = ["eyJ"]
+# MiniMax 最新旗舰是 M2(开源大模型,海螺 AI 同款)。
+# 注:不同厂区/账号支持的模型不一样,如果某条报 400,删掉换下一个试。
+models = [
+    "MiniMax-M2",
+    "MiniMax-Text-01",
+    "abab7-chat-preview",
+    "abab6.5s-chat",
+]
+
+[providers.ollama]
+display_name = "本地 Ollama"
+base_url     = "http://localhost:11434"
+key_prefix   = []
+# Ollama 模型一般会在运行时动态拉取;这里可显式列出常用的本地模型名,
+# 它们也会出现在下拉框里(必须先在 Ollama 中 `ollama pull <name>` 拉取)。
+models = [
+    "gpt-oss-20b",
+    "llama3.1:70b",
+    "llama4:latest",
+    "qwen3:32b",
+    "deepseek-r1:70b",
+    "mistral:latest",
+]
+
+
+# ---------------------------------------------------------------------------
+# 模型 → provider 的特殊路由(一般无需修改)
+# 当某些模型走的不是其默认 provider(比如 GPT-5 系列走专门的 reasoning 路径)
+# 时,可在这里覆盖。
+# ---------------------------------------------------------------------------
+[overrides]
+"gpt-5"   = "gpt5"
+"gpt-5.1" = "gpt5"
+"gpt-5.2" = "gpt5"

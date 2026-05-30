@@ -1000,7 +1000,62 @@
           <item row="0" column="0">
            <widget class="QTextBrowser" name="textBrowser_2">
             <property name="html">
-             <string>&lt;html&gt;&lt;body style=&quot; font-family:'Microsoft YaHei UI'; font-size:11pt;&quot;&gt;&lt;/body&gt;&lt;/html&gt;</string>
+             <string>&lt;html&gt;&lt;body style=&quot; font-family:'Microsoft YaHei UI'; font-size:11pt; color:#3D3929;&quot;&gt;
+
+&lt;h2 style=&quot;color:#3D3929; margin-bottom:6px;&quot;&gt;Spatial Analysis Agent 使用说明&lt;/h2&gt;
+&lt;p style=&quot;color:#6B6759; margin-top:0px;&quot;&gt;基于大模型的 QGIS 空间分析助手 — 用自然语言驱动 GIS 工作流。&lt;/p&gt;
+&lt;hr style=&quot;border:none; border-top:1px solid #E5E4DD; margin:10px 0;&quot;/&gt;
+
+&lt;h3 style=&quot;color:#3D3929;&quot;&gt;一、首次配置&lt;/h3&gt;
+&lt;ol&gt;
+  &lt;li&gt;打开&lt;b&gt;「设置」&lt;/b&gt;选项卡,把你的 API 密钥粘贴到 &lt;b&gt;API 密钥&lt;/b&gt; 框中。
+      支持 OpenAI / OpenRouter / Anthropic 等服务,系统会根据密钥前缀自动识别。&lt;/li&gt;
+  &lt;li&gt;在 &lt;b&gt;模型&lt;/b&gt; 下拉里选择一个可用模型(已根据 API 密钥过滤)。&lt;/li&gt;
+  &lt;li&gt;首次启动时,如果检测到缺失的 Python 依赖包,会自动弹窗提示安装,点&lt;b&gt;「是」&lt;/b&gt;即可。&lt;/li&gt;
+  &lt;li&gt;如需更换输出目录,在 &lt;b&gt;工作目录&lt;/b&gt; 行点&lt;b&gt;「更改」&lt;/b&gt;选择路径。&lt;/li&gt;
+&lt;/ol&gt;
+
+&lt;h3 style=&quot;color:#3D3929;&quot;&gt;二、各页面功能&lt;/h3&gt;
+&lt;ul&gt;
+  &lt;li&gt;&lt;b&gt;对话&lt;/b&gt; — 主交互页。在底部输入框写下你的分析需求,点
+      &lt;span style=&quot;color:#D97757; font-weight:600;&quot;&gt;发送请求&lt;/span&gt;。
+      助手会理解任务、生成代码、执行并把结果加入图层面板。&lt;/li&gt;
+  &lt;li&gt;&lt;b&gt;代码&lt;/b&gt; — 查看/编辑/手动运行助手生成的 Python 代码,可保存为 .py 文件。&lt;/li&gt;
+  &lt;li&gt;&lt;b&gt;处理流程&lt;/b&gt; — 以图形方式展示助手的求解步骤拓扑。&lt;/li&gt;
+  &lt;li&gt;&lt;b&gt;知识库&lt;/b&gt; — 写入项目特定知识(字段含义、命名约定、单位规则等),
+      助手在每次任务中会优先参考。也可上传 PDF / DOCX / CSV 等参考文档。&lt;/li&gt;
+  &lt;li&gt;&lt;b&gt;设置&lt;/b&gt; — API 密钥、模型选择、推理深度、工作目录。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3 style=&quot;color:#3D3929;&quot;&gt;三、基本操作&lt;/h3&gt;
+&lt;ul&gt;
+  &lt;li&gt;在 QGIS 主界面&lt;b&gt;勾选&lt;/b&gt;一个或多个图层 → 它们会被自动纳入本次分析的输入数据。&lt;/li&gt;
+  &lt;li&gt;在请求框写明你的目标,例如&lt;br/&gt;
+      &lt;code style=&quot;background:#F0EEE6; padding:2px 6px; border-radius:3px;&quot;&gt;
+      把所选耕地图层按 1km 网格栅格化,输出每格的总面积&lt;/code&gt;&lt;/li&gt;
+  &lt;li&gt;助手返回方案后,可点&lt;b&gt;「确认执行」&lt;/b&gt;直接跑,或&lt;b&gt;「我有修改」&lt;/b&gt;追加补充要求。&lt;/li&gt;
+  &lt;li&gt;任务执行中可随时按&lt;b&gt;「中断」&lt;/b&gt;停止;按&lt;b&gt;「清空」&lt;/b&gt;清理输入和对话历史。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;h3 style=&quot;color:#3D3929;&quot;&gt;四、提示与建议&lt;/h3&gt;
+&lt;ul&gt;
+  &lt;li&gt;描述任务时,&lt;b&gt;指明输入图层、需要的输出和具体参数&lt;/b&gt;,助手成功率会显著提高。&lt;/li&gt;
+  &lt;li&gt;对项目里经常用到的字段含义,提前写到&lt;b&gt;知识库&lt;/b&gt;,避免每次重复解释。&lt;/li&gt;
+  &lt;li&gt;复杂任务推荐保持&lt;b&gt;「审查生成的代码」&lt;/b&gt;勾选,响应稍慢但成功率更高。&lt;/li&gt;
+  &lt;li&gt;API 密钥仅保存在本机 &lt;code style=&quot;background:#F0EEE6; padding:1px 4px; border-radius:3px;&quot;&gt;plugin_dir/SpatialAnalysisAgent/config.ini&lt;/code&gt;,不会上传。&lt;/li&gt;
+  &lt;li&gt;&lt;b&gt;自定义模型列表:&lt;/b&gt;编辑
+      &lt;code style=&quot;background:#F0EEE6; padding:1px 4px; border-radius:3px;&quot;&gt;plugin_dir/SpatialAnalysisAgent/models.toml&lt;/code&gt;
+      可以新增/删除模型、增加新的 provider、调整 API 密钥识别前缀。文件内含注释和示例,
+      改完&lt;b&gt;重启 QGIS&lt;/b&gt;即生效;文件损坏会自动回退到内置默认值,不会让插件崩。&lt;/li&gt;
+&lt;/ul&gt;
+
+&lt;hr style=&quot;border:none; border-top:1px solid #E5E4DD; margin:14px 0;&quot;/&gt;
+&lt;p&gt;&lt;b&gt;项目主页:&lt;/b&gt;
+&lt;a href=&quot;https://github.com/lynn16t/GISCopilot&quot; style=&quot;color:#1f6feb; text-decoration:underline;&quot;&gt;
+https://github.com/lynn16t/GISCopilot&lt;/a&gt;&lt;/p&gt;
+&lt;p style=&quot;color:#9C9789; font-size:10pt;&quot;&gt;遇到问题或建议,欢迎在 GitHub 仓库提 Issue。&lt;/p&gt;
+
+&lt;/body&gt;&lt;/html&gt;</string>
             </property>
             <property name="openExternalLinks">
              <bool>true</bool>

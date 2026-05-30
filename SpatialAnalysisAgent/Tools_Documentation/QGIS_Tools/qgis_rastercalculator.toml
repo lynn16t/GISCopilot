@@ -1,38 +1,39 @@
 tool_ID = 'native:rastercalc'
 tool_name = 'Raster calculator'
 
-# provide a brief description (1 line) of the data source to inform AI whether need to use this data source.
 brief_description = '''
-This algorithm allows performing algebraic operations using raster layers.
-The resulting layer will have its values computed according to an expression. The expression can contain numerical values, operators and references to any of the layers in the current project
+This algorithm performs algebraic operations on raster layers.
+The result raster has pixel values computed according to an expression.
 '''
-parameters ='''
-INPUT: Input vector layer
-EXPRESSION: Raster-based expression that will be used to calculate the output raster layer. When writing the expression, raster layers are referred by their name and the number of the band, e.g., `layer_name@1`. For instance, the first band from a layer named DEM will be referred as DEM@1. Operators contains a number of calculation operators for pixels manipulation: 
-                -Arithmetical: +, -, *, sqrt, abs, ln, … 
-                -Trigonometric: sin, cos, tan, …
-                -Comparison: =, !=, <, >=, …
-                - Logical: IF, AND, OR, (, )
-                - Statistical: min, max
-OUTPUT: Specify the output (buffer) layer. One of: Create Temporary Layer (TEMPORARY_OUTPUT); Save to File…;
-        Save to Geopackage…; Save to Database Table…; Append to Layer…
-'''
-code_example = '''
 
+parameters ='''
+LAYERS: List of input raster layers (Python list of QgsRasterLayer objects). Type: [raster] [list]
+EXPRESSION: String expression referring to layers by NAME@BAND, e.g. '"DEM@1" > 100'. Type: [string]
+EXTENT: Optional clip extent. Type: [extent] Default: None
+CELL_SIZE: Optional override of output cell size. Type: [number] Default: None
+CRS: Optional output CRS override. Type: [crs] Default: None
+CREATION_OPTIONS: Optional GDAL creation options. Type: [string] Default: ''
+OUTPUT: Output raster file path or TEMPORARY_OUTPUT. Type: [raster]
+'''
+
+code_example = '''
 def rastercalc():
-	
     slope_path = 'D:/slope.tif'
     slope_layer = QgsRasterLayer(slope_path, 'Slope Layer')
-	output_path = "D:/Output_path/raster_calc_output.tif"
+    output_path = 'D:/Output_path/raster_calc_output.tif'
+
     parameters = {
-    'LAYERS':[slope_layer], # These are the list of all the layers loaded, these ae not the path
-    'EXPRESSION':'"Slope Layer@1"<0.3',
-    'EXTENT': None,
-    'CELL_SIZE':None,
-    'OUTPUT': output_path}
+        'LAYERS': [slope_layer],
+        'EXPRESSION': '"Slope Layer@1" < 0.3',
+        'OUTPUT': output_path,
+    }
     result = processing.run("native:rastercalc", parameters)
-    
+
+    import os
+    assert os.path.exists(result['OUTPUT']), f"native:rastercalc did not produce output: {result['OUTPUT']}"
+
     raster_calc_layer = QgsRasterLayer(result['OUTPUT'], 'Raster Calculator Result')
     QgsProject.instance().addMapLayer(raster_calc_layer)
+
 rastercalc()
 '''

@@ -779,105 +779,157 @@ Thematic_Map_Creation()
 
 ],
 "qgis:rastercalculator": ['''
-Performing algebraic operations using raster layers.
+Performing algebraic operations using raster layers via the algorithm ID `native:rastercalc`.
+
+IMPORTANT: native:rastercalc ONLY accepts these 3 keys: INPUT, EXPRESSION, OUTPUT.
+Do NOT pass LAYERS / EXTENT / CELL_SIZE / CRS — they are NOT valid for this
+algorithm and will raise:
+    ERROR_CODE_PARAM_UNKNOWN: native:rastercalc does not accept parameter(s)
+    ['CELL_SIZE', 'CRS', 'EXTENT', 'LAYERS'].
+
+IMPORT NOTE: When using processing.run('native:rastercalc', ...) you ONLY need
+`import processing` + `QgsRasterLayer`. Do NOT import QgsRasterCalculator
+or QgsRasterCalculatorEntry — these classes belong to the low-level direct API
+and they live in `qgis.analysis`, NOT `qgis.core`. Importing them from
+`qgis.core` raises: cannot import name 'QgsRasterCalculatorEntry' from 'qgis.core'.
 
 Parameters:
-        INPUT: List of input raster layers
-        EXPRESSION:Raster-based expression that will be used to calculate the output raster layer.
-            - In writing the expression, raster layers are referred by their name and the number of the band, e.g., `layer_name@1`. For instance, the first band from a layer named DEM will be referred as DEM@1.
-            - Operators contains a number of calculation operators for pixels manipulation: 
-                -Arithmetical: +, -, *, sqrt, abs, ln, … 
-                -Trigonometric: sin, cos, tan, …
-                -Comparison: =, !=, <, >=, …
-                - Logical: IF, AND, OR, (, )
-                - Statistical: min, max
+        INPUT: List of input raster layers (Python list of QgsRasterLayer objects, even for a single layer).
+        EXPRESSION: Raster-based expression. Reference layers by their NAME@BAND, e.g. `"DEM@1"` or `"Slope Layer@1"`.
+            - Arithmetic: +, -, *, /, sqrt, abs, ln
+            - Trigonometric: sin, cos, tan
+            - Comparison: =, !=, <, >, <=, >=
+            - Logical: IF, AND, OR, NOT
+            - Statistical: min, max
+        OUTPUT: Output raster file path or TEMPORARY_OUTPUT.
 --------------------
  sample code:
 --------------------
 def rastercalc():
-    slope_path = '/vsimem/slope.tif'
+    # native:rastercalc ONLY accepts INPUT, EXPRESSION, OUTPUT.
+    # Do NOT add LAYERS / EXTENT / CELL_SIZE / CRS.
+    slope_path = 'D:/slope.tif'
     slope_layer = QgsRasterLayer(slope_path, 'Slope Layer')
-   
+    output_path = 'D:/Output_path/raster_calc_output.tif'
+
     parameters = {
-    'LAYERS':[slope_layer], # These are the list of all the layers loaded, these ae not the path
-    'EXPRESSION':'"Slope Layer@1"<0.3',
-    'EXTENT': None,
-    'CELL_SIZE':None,
-    'OUTPUT':'/vsimem/raster_calc_output.tif'}
+        'INPUT': [slope_layer],                       # MUST be a list of QgsRasterLayer objects
+        'EXPRESSION': '"Slope Layer@1" < 0.3',        # reference layer by its name + @band
+        'OUTPUT': output_path,
+    }
     result = processing.run("native:rastercalc", parameters)
-    
+
+    import os
+    assert os.path.exists(result['OUTPUT']), f"native:rastercalc did not produce output: {result['OUTPUT']}"
+
     raster_calc_layer = QgsRasterLayer(result['OUTPUT'], 'Raster Calculator Result')
     QgsProject.instance().addMapLayer(raster_calc_layer)
-    
+
 rastercalc()
     '''],
 
 "native:rastercalc": ['''
 Performing algebraic operations using raster layers.
 
+IMPORTANT: native:rastercalc ONLY accepts these 3 keys: INPUT, EXPRESSION, OUTPUT.
+Do NOT pass LAYERS / EXTENT / CELL_SIZE / CRS — they are NOT valid for this
+algorithm and will raise:
+    ERROR_CODE_PARAM_UNKNOWN: native:rastercalc does not accept parameter(s)
+    ['CELL_SIZE', 'CRS', 'EXTENT', 'LAYERS'].
+
+IMPORT NOTE: When using processing.run('native:rastercalc', ...) you ONLY need
+`import processing` + `QgsRasterLayer`. Do NOT import QgsRasterCalculator
+or QgsRasterCalculatorEntry — these classes belong to the low-level direct API
+and they live in `qgis.analysis`, NOT `qgis.core`. Importing them from
+`qgis.core` raises: cannot import name 'QgsRasterCalculatorEntry' from 'qgis.core'.
+If you need control over extent / cell size / CRS, pre-process inputs with
+gdal:warpreproject, or switch to gdal:rastercalculator (which uses INPUT_A,
+BAND_A, FORMULA, NO_DATA, OUTPUT).
+
 Parameters:
-        INPUT: List of input raster layers
-        EXPRESSION:Raster-based expression that will be used to calculate the output raster layer.
-            - In writing the expression, raster layers are referred by their name and the number of the band, e.g., `layer_name@1`. For instance, the first band from a layer named DEM will be referred as DEM@1.
-            - Operators contains a number of calculation operators for pixels manipulation: 
-                -Arithmetical: +, -, *, sqrt, abs, ln, … 
-                -Trigonometric: sin, cos, tan, …
-                -Comparison: =, !=, <, >=, …
-                - Logical: IF, AND, OR, (, )
-                - Statistical: min, max
+        INPUT: List of input raster layers (Python list of QgsRasterLayer objects, even for a single layer).
+        EXPRESSION: Raster-based expression. Reference layers by their NAME@BAND, e.g. `"DEM@1"` or `"Slope Layer@1"`.
+            - Arithmetic: +, -, *, /, sqrt, abs, ln
+            - Trigonometric: sin, cos, tan
+            - Comparison: =, !=, <, >, <=, >=
+            - Logical: IF, AND, OR, NOT
+            - Statistical: min, max
+        OUTPUT: Output raster file path or TEMPORARY_OUTPUT.
 --------------------
  sample code:
 --------------------
 def rastercalc():
-    slope_path = '/vsimem/slope.tif'
+    # native:rastercalc ONLY accepts INPUT, EXPRESSION, OUTPUT.
+    # Do NOT add LAYERS / EXTENT / CELL_SIZE / CRS.
+    slope_path = 'D:/slope.tif'
     slope_layer = QgsRasterLayer(slope_path, 'Slope Layer')
-   
+    output_path = 'D:/Output_path/raster_calc_output.tif'
+
     parameters = {
-    'LAYERS':[slope_layer], # These are the list of all the layers loaded, these ae not the path
-    'EXPRESSION':'"Slope Layer@1"<0.3',
-    'EXTENT': None,
-    'CELL_SIZE':None,
-    'OUTPUT':'/vsimem/raster_calc_output.tif'}
+        'INPUT': [slope_layer],                       # MUST be a list of QgsRasterLayer objects
+        'EXPRESSION': '"Slope Layer@1" < 0.3',        # reference layer by its name + @band
+        'OUTPUT': output_path,
+    }
     result = processing.run("native:rastercalc", parameters)
-    
+
+    import os
+    assert os.path.exists(result['OUTPUT']), f"native:rastercalc did not produce output: {result['OUTPUT']}"
+
     raster_calc_layer = QgsRasterLayer(result['OUTPUT'], 'Raster Calculator Result')
     QgsProject.instance().addMapLayer(raster_calc_layer)
-    
+
 rastercalc()
     '''],
 
 'gdal:rastercalculator': ['''
-Performing algebraic operations using raster layers.
+Performs map algebra on a SINGLE raster layer using GDAL with a FORMULA that
+references the input as 'A'. This is a DIFFERENT algorithm from native:rastercalc.
+
+IMPORTANT: in current QGIS builds (3.40+) gdal:rastercalculator ONLY accepts
+these 5 keys: INPUT_A, BAND_A, FORMULA, NO_DATA, OUTPUT.
+The historical multi-input keys (INPUT_B/BAND_B/INPUT_C..F) and the extra
+controls (RTYPE, EXTRA, OPTIONS, EXTENT_OPT) have been REMOVED — passing them
+raises:
+    ERROR_CODE_PARAM_UNKNOWN: gdal:rastercalculator does not accept parameter(s)
+    ['BAND_B', 'EXTRA', 'INPUT_B', 'OPTIONS', 'RTYPE'].
+For multi-raster algebra (A+B etc.), switch to native:rastercalc instead.
 
 Parameters:
-        INPUT: List of input raster layers
-        EXPRESSION:Raster-based expression that will be used to calculate the output raster layer.
-            - In writing the expression, raster layers are referred by their name and the number of the band, e.g., `layer_name@1`. For instance, the first band from a layer named DEM will be referred as DEM@1.
-            - Operators contains a number of calculation operators for pixels manipulation: 
-                -Arithmetical: +, -, *, sqrt, abs, ln, … 
-                -Trigonometric: sin, cos, tan, …
-                -Comparison: =, !=, <, >=, …
-                - Logical: IF, AND, OR, (, )
-                - Statistical: min, max
+        INPUT_A: Input raster (path string or QgsRasterLayer). The ONLY input — multi-input INPUT_B is no longer supported.
+        BAND_A : Band number of raster A (1-based). Default: 1
+        FORMULA: Formula referencing the single input as 'A'. e.g. '(A>100)*1', 'A * 3.28084', 'log(A)', 'A * (A > 0)'.
+                 Supported ops: +, -, *, /, **, <, >, ==, !=, &, |, ~,
+                                numpy-like: log, sqrt, abs, where, sin, cos, ...
+        NO_DATA: Optional NoData value for output. AVOID setting NO_DATA=0
+                 for binary mask formulas like '(A>X)*1' — it discards the
+                 entire 'false' region. Leave it None unless you specifically
+                 need to mask a value.
+        OUTPUT : Output raster file path.
 --------------------
  sample code:
 --------------------
-def rastercalc():
-    slope_path = '/vsimem/slope.tif'
-    slope_layer = QgsRasterLayer(slope_path, 'Slope Layer')
-   
+def gdal_rastercalc():
+    # Binary mask: 1 where aspect > 100, else 0.
+    # ONLY 5 keys are accepted: INPUT_A, BAND_A, FORMULA, NO_DATA, OUTPUT.
+    # Do NOT add INPUT_B / BAND_B / RTYPE / EXTRA / OPTIONS.
+    aspect_path = 'D:/data/aspect.tif'
+    output_path = 'D:/output/aspect_gt100.tif'
+
     parameters = {
-    'LAYERS':[slope_layer], # These are the list of all the layers loaded, these ae not the path
-    'EXPRESSION':'"Slope Layer@1"<0.3',
-    'EXTENT': None,
-    'CELL_SIZE':None,
-    'OUTPUT':'/vsimem/raster_calc_output.tif'}
-    result = processing.run("native:rastercalc", parameters)
-    
-    raster_calc_layer = QgsRasterLayer(result['OUTPUT'], 'Raster Calculator Result')
-    QgsProject.instance().addMapLayer(raster_calc_layer)
-    
-rastercalc()
+        'INPUT_A': aspect_path,
+        'BAND_A': 1,
+        'FORMULA': '(A>100)*1',
+        'OUTPUT': output_path,
+    }
+    result = processing.run("gdal:rastercalculator", parameters)
+
+    import os
+    assert os.path.exists(result['OUTPUT']), f"gdal:rastercalculator did not produce output: {result['OUTPUT']}"
+
+    raster_layer = QgsRasterLayer(result['OUTPUT'], 'Aspect > 100')
+    QgsProject.instance().addMapLayer(raster_layer)
+
+gdal_rastercalc()
     '''],
 
 

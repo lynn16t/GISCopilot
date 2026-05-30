@@ -53,7 +53,7 @@ class GuardGate:
             return self.Action(
                 "show_code",
                 code=parsed.content,
-                feedback_message="Python code generated. Check the Generated Code tab.",
+                feedback_message="代码生成完成（请查看「代码」标签页）。",
             )
 
         elif parsed.output_type == OutputType.PLAN:
@@ -80,7 +80,7 @@ class GuardGate:
             return self.Action(
                 "confirm_knowledge",
                 suggestion=parsed.content,
-                confirm_message="Add this to project knowledge?",
+                confirm_message="是否将此条知识保存到项目知识库？",
             )
 
         elif parsed.output_type == OutputType.QUESTION:
@@ -108,7 +108,7 @@ class GuardGate:
             格式化后的可读文本
         """
         lines = []
-        lines.append("=== Execution Plan ===\n")
+        lines.append("=== 执行计划 ===\n")
 
         for step in plan.get("steps", []):
             step_num = step.get("step_number", "?")
@@ -118,15 +118,17 @@ class GuardGate:
             params = step.get("key_parameters", {})
             output_desc = step.get("output_description", "")
 
-            lines.append(f"Step {step_num}: {operation}")
-            lines.append(f"  Tool: {tool_id}")
+            lines.append(f"步骤 {step_num}: {operation}")
+            lines.append(f"  工具: {tool_id}")
             if input_layer:
-                lines.append(f"  Input: {input_layer}")
+                lines.append(f"  输入: {input_layer}")
             if params:
+                # 参数键名(INPUT/OUTPUT/TARGET_CRS 等)按原样保留,
+                # 这些是 QGIS Processing 的固定标识符,不应翻译。
                 for k, v in params.items():
                     lines.append(f"  {k}: {v}")
             if output_desc:
-                lines.append(f"  Output: {output_desc}")
+                lines.append(f"  输出: {output_desc}")
             lines.append("")
 
         return "\n".join(lines)

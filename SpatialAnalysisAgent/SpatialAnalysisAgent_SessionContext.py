@@ -17,11 +17,20 @@ from typing import List, Dict, Any, Optional
 class SessionContext:
     """会话上下文管理器 - Phase 3 版本"""
 
-    # Token 预算（字符数，约 1:4 对应 token）
-    MAX_CONTEXT_CHARS = 24000       # 单次调用硬上限 ~6K tokens
-    STATIC_BUDGET = 8000            # 规则 + 知识库
-    HISTORY_BUDGET = 8000           # 对话历史
-    STEP_BUDGET = 8000              # 步骤指令 + 工具文档
+    # Token 预算（字符数,约 1:4 对应 token）
+    # —— 主流模型可用 input context ——
+    #   Claude Opus 4.7   : 200K tokens
+    #   GPT-5 / GPT-5.x   : ~400K tokens
+    #   Gemini 2.5/3.x Pro: ~1M tokens
+    # 下面这套预算按 Claude 200K 留 ~30K 余量配,~170K tokens 可用,
+    # 拆给 history / step / static。换到 Gemini 可以再往上调。
+    MAX_CONTEXT_CHARS = 800_000     # 单次调用硬上限 ~200K tokens (≈Claude max)
+    STATIC_BUDGET = 32_000          # 规则 + 知识库 (~8K tokens)
+    HISTORY_BUDGET = 320_000        # 对话历史 (~80K tokens)
+    STEP_BUDGET = 320_000           # 步骤指令 + 工具文档 (~80K tokens)
+    # —— 压缩策略阈值 ——
+    RECENT_VERBATIM_COUNT = 30      # 最近 N 条消息(=15 轮)完整保留,不压缩
+    MIDDLE_TRUNCATE_THRESHOLD = 5000  # 中间消息超过此长度才截断(原来是 200,太狠)
 
     def __init__(self, knowledge_manager=None):
         """
@@ -346,63 +355,82 @@ class SessionContext:
 
     def _get_compressed_history(self) -> List[Dict[str, str]]:
         """
-        对话历史压缩策略：
-        - 第一条消息（原始任务）：始终保留
-        - 最近 3 轮交互（6 条消息）：完整保留
-        - 中间消息的压缩规则：
-          · [Plan] 标记的消息：删除（因为 current_plan 只保留最新的）
-          · [Result] 标记的消息：完整保留，不截断
-          · [Executed code] 标记的消息：只保留标记 "[Code was executed]"，删除代码体
-          · 普通消息：超过 200 字符则截断
+        对话历史压缩策略 (v2: 预算驱动,默认宽松):
+
+        新策略默认完整保留所有消息,只在累计字符数超过 HISTORY_BUDGET 时才压缩。
+        旧策略硬性把所有中间消息截到 200 字符,导致即使有 80K token 预算也只能用 6K。
+
+        步骤:
+        1. 第一条消息(原始任务)始终保留
+        2. 最近 RECENT_VERBATIM_COUNT 条(=15 轮)完整保留,不动
+        3. 中间消息:
+           · [Plan]: 一律丢弃 (current_plan 字段只保留最新的)
+           · [Executed code]: 折叠为标记 "[Code was executed]" (代码已经存在 executed_codes)
+           · [Result] / 普通消息: 默认完整保留
+        4. 总字符数检查:超过 HISTORY_BUDGET 才进一步压缩
+           · 第一轮:把中间消息中超过 MIDDLE_TRUNCATE_THRESHOLD 的截断
+           · 第二轮(仍超标):从最老的中间消息开始整条丢弃,直到达标
         """
         if not self.messages:
             return []
 
-        compressed = []
+        # 1. 第一条 + 最近 N 条
+        recent_count = min(self.RECENT_VERBATIM_COUNT, len(self.messages))
+        first_msg = [self.messages[0]] if len(self.messages) > 0 else []
+        # 避免 first_msg 与 recent_messages 重叠
+        if recent_count >= len(self.messages):
+            recent_messages = self.messages[1:] if len(self.messages) > 1 else []
+            middle_messages = []
+        else:
+            recent_messages = self.messages[-recent_count:]
+            middle_messages = self.messages[1:-recent_count]
 
-        # 1. 第一条消息始终保留（原始任务）
-        if len(self.messages) > 0:
-            compressed.append(self.messages[0])
-
-        # 2. 最近 3 轮 = 6 条消息
-        recent_count = min(6, len(self.messages))
-        recent_messages = self.messages[-recent_count:] if recent_count > 0 else []
-
-        # 3. 中间消息需要压缩
-        middle_messages = self.messages[1:-recent_count] if len(self.messages) > recent_count + 1 else []
-
+        # 2. 处理中间消息(只做无损/小损压缩:丢 Plan、折叠 code)
+        processed_middle = []
         for msg in middle_messages:
             content = msg["content"]
-
-            # [Plan] 消息：删除（旧 plan 无用）
             if content.startswith("[Plan]"):
+                # 旧 plan 已被 current_plan 字段覆盖,无需保留
                 continue
-
-            # [Result] 消息：完整保留
-            elif content.startswith("[Result]"):
-                compressed.append(msg)
-
-            # [Executed code] 消息：只保留标记
             elif content.startswith("[Executed code]"):
-                compressed.append({
+                processed_middle.append({
                     "role": msg["role"],
                     "content": "[Code was executed]"
                 })
-
-            # 普通消息：截断
             else:
-                if len(content) > 200:
-                    compressed.append({
-                        "role": msg["role"],
-                        "content": content[:200] + "..."
-                    })
-                else:
-                    compressed.append(msg)
+                # [Result] 和普通消息默认完整保留
+                processed_middle.append(msg)
 
-        # 4. 添加最近消息（完整保留）
-        compressed.extend(recent_messages)
+        def _total_chars(msgs):
+            return sum(len(m["content"]) for m in msgs)
 
-        return compressed
+        all_msgs = first_msg + processed_middle + recent_messages
+
+        # 3. 预算检查:未超就直接返回
+        if _total_chars(all_msgs) <= self.HISTORY_BUDGET:
+            return all_msgs
+
+        # 4. 第一轮压缩:截断中间消息中的超长消息
+        truncated_middle = []
+        for msg in processed_middle:
+            if len(msg["content"]) > self.MIDDLE_TRUNCATE_THRESHOLD:
+                truncated_middle.append({
+                    "role": msg["role"],
+                    "content": msg["content"][:self.MIDDLE_TRUNCATE_THRESHOLD] + "...[truncated]"
+                })
+            else:
+                truncated_middle.append(msg)
+
+        all_msgs = first_msg + truncated_middle + recent_messages
+        if _total_chars(all_msgs) <= self.HISTORY_BUDGET:
+            return all_msgs
+
+        # 5. 第二轮:从最老中间消息开始整条丢
+        while _total_chars(all_msgs) > self.HISTORY_BUDGET and truncated_middle:
+            truncated_middle.pop(0)
+            all_msgs = first_msg + truncated_middle + recent_messages
+
+        return all_msgs
 
     # ========================
     # 调试与状态查询

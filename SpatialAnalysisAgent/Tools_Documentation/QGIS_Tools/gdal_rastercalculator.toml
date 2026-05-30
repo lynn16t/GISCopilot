@@ -1,33 +1,69 @@
 tool_ID = "gdal:rastercalculator"
-
 tool_name = "Raster Calculator (GDAL)"
 
-brief_description = """Performs map algebra operations on raster layers using GDAL expressions. Supports arithmetic, logical, and trigonometric functions. Equivalent to ArcGIS Raster Calculator."""
+brief_description = """Performs map algebra on raster layers using GDAL with numpy-style FORMULA. Supports up to 6 inputs (INPUT_A..F) referenced as 'A', 'B', ..., 'F' in the formula."""
 
-parameters = """INPUT_A: Input raster layer A. Type: [raster]
-BAND_A: Band number of raster A. Type: [raster band] Default: 1
-FORMULA: Calculation formula using A, B, C... Type: [string]
-NO_DATA: NoData value. Type: [number]
-OUTPUT: Output raster. Type: [raster]"""
+parameters = """INPUT_A: First input raster. Type: [raster]
+BAND_A: Band number of raster A (1-based). Type: [raster band] Default: 1
+INPUT_B: Optional second input. Type: [raster] Default: None
+BAND_B: Band number of raster B. Type: [raster band]
+INPUT_C: Optional third input. Type: [raster] Default: None
+BAND_C: Band number of raster C. Type: [raster band]
+INPUT_D / INPUT_E / INPUT_F: Optional 4th-6th inputs (with corresponding BAND_D/E/F).
+FORMULA: Calculation in gdalnumeric / numpy syntax. Reference inputs as 'A', 'B', .... Examples:
+            '(A>100)*1'                 # binary mask
+            'A * 3.28084'               # meters to feet
+            'A * (A > 0)'               # zero out negatives
+            'sqrt(A*A + B*B)'           # magnitude of two inputs
+            'logical_or(A<=177, A>=185) * A'
+        Default: 'A*2'
+NO_DATA: Optional output NoData value. Leave None unless you specifically need to mask a value. Type: [number] Default: None
+EXTENT_OPT: How to handle inputs with different extents. 0=Ignore, 1=Fail, 2=Union, 3=Intersect. Type: [enumeration] Default: 0
+RTYPE: Output data type. 0=Byte, 1=Int16, 2=UInt16, 3=UInt32, 4=Int32, 5=Float32, 6=Float64, 11=Int8. Type: [enumeration] Default: 5
+PROJWIN: Optional custom output extent. Type: [extent] Default: None
+OPTIONS: Optional GDAL creation options string. Type: [string] Default: ''
+CREATION_OPTIONS: Alias for OPTIONS. Type: [string] Default: ''
+EXTRA: Optional extra GDAL command-line parameters. Type: [string] Default: None
+OUTPUT: Output raster file path. Type: [raster]
+"""
 
-code_example = """import processing
+code_example = """import os
+import processing
 from qgis.core import QgsProject, QgsRasterLayer
 
 def raster_calculator():
-    params = {
-        'INPUT_A': 'D:/Data/dem.tif',
+    # Single-input example: binary mask where aspect > 100.
+    aspect_path = 'D:/data/aspect.tif'
+    output_path = 'D:/output/aspect_gt100.tif'
+
+    parameters = {
+        'INPUT_A': aspect_path,
         'BAND_A': 1,
-        'INPUT_B': None,
-        'BAND_B': -1,
-        'FORMULA': 'A * 3.28084',
-        'NO_DATA': None,
-        'RTYPE': 5,
-        'OUTPUT': 'D:/Output/dem_feet.tif'
+        'FORMULA': '(A>100)*1',
+        'RTYPE': 0,                 # 0 = Byte (binary mask)
+        'OUTPUT': output_path,
     }
-    
-    result = processing.run("gdal:rastercalculator", params)
-    
+    result = processing.run('gdal:rastercalculator', parameters)
+
+    # Always verify the file was actually written
+    assert os.path.exists(result['OUTPUT']), f\"gdal:rastercalculator did not produce output: {result['OUTPUT']}\"
+
     layer = QgsRasterLayer(result['OUTPUT'], 'Raster Calculator')
     QgsProject.instance().addMapLayer(layer)
 
-raster_calculator()"""
+raster_calculator()
+
+
+def raster_calculator_two_inputs():
+    # Multi-input example: combine two rasters with INPUT_A and INPUT_B.
+    parameters = {
+        'INPUT_A': 'D:/data/dem.tif',
+        'BAND_A': 1,
+        'INPUT_B': 'D:/data/slope.tif',
+        'BAND_B': 1,
+        'FORMULA': 'A * (B > 0.1)',  # zero out cells with slope <= 0.1
+        'OUTPUT': 'D:/output/combined.tif',
+    }
+    result = processing.run('gdal:rastercalculator', parameters)
+    assert os.path.exists(result['OUTPUT'])
+"""

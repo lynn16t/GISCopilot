@@ -1,37 +1,53 @@
 tool_ID = 'native:rastercalc'
 tool_name = 'Raster calculator'
 
-# provide a brief description (1 line) of the data source to inform AI whether need to use this data source.
-brief_description = '''
-This algorithm allows performing algebraic operations using raster layers.
-The resulting layer will have its values computed according to an expression. The expression can contain numerical values, operators and references to any of the layers in the current project
-'''
-parameters ='''
-INPUT: Input vector layer
-EXPRESSION: Raster-based expression that will be used to calculate the output raster layer. When writing the expression, raster layers are referred by their name and the number of the band, e.g., `layer_name@1`. For instance, the first band from a layer named DEM will be referred as DEM@1. Operators contains a number of calculation operators for pixels manipulation: 
-                -Arithmetical: +, -, *, sqrt, abs, ln, … 
-                -Trigonometric: sin, cos, tan, …
-                -Comparison: =, !=, <, >=, …
-                - Logical: IF, AND, OR, (, )
-                - Statistical: min, max
-OUTPUT: Specify the output (buffer) layer. One of: Create Temporary Layer (TEMPORARY_OUTPUT); Save to File…;
-        Save to Geopackage…; Save to Database Table…; Append to Layer…
-'''
-code_example = '''
+# Note: 这份 toml 的参数列表/示例可能滞后于实际 QGIS 版本。
+# 真正的权威是运行时签名（QgsApplication.processingRegistry()），
+# 插件 prompt 顶部的 "RUNTIME-VERIFIED PARAMETER SIGNATURES" 块和
+# preflight 校验都是用运行时签名。这里只是给 LLM 一个代码模板参考。
 
+brief_description = '''
+This algorithm performs algebraic operations on raster layers.
+The result raster has pixel values computed according to an expression.
+'''
+
+parameters ='''
+LAYERS: List of input raster layers (Python list of QgsRasterLayer objects, e.g. [slope_layer, dem_layer]). Even for a single layer, wrap it in a list. Type: [raster] [list]
+EXPRESSION: String expression referring to layers by NAME@BAND. Examples:
+                '"DEM@1" > 100'
+                '"Slope Layer@1" * 2 + "DEM@1"'
+            Operators:
+                - Arithmetic: +, -, *, /, sqrt, abs, ln, log, exp
+                - Trigonometric: sin, cos, tan, asin, acos, atan
+                - Comparison: =, !=, <, >, <=, >=
+                - Logical: IF(test, a, b), AND, OR, NOT
+                - Statistical: min(), max()
+EXTENT: Optional clip extent for the output. Type: [extent] Default: None
+CELL_SIZE: Optional override of output cell size. Type: [number] Default: None
+CRS: Optional output CRS override. Type: [crs] Default: None
+CREATION_OPTIONS: Optional GDAL creation options string. Type: [string] Default: ''
+OUTPUT: Output raster file path or TEMPORARY_OUTPUT. Type: [raster]
+'''
+
+code_example = '''
 def rastercalc():
-    slope_path = '/vsimem/slope.tif'
+    slope_path = 'D:/slope.tif'
     slope_layer = QgsRasterLayer(slope_path, 'Slope Layer')
-   
+    output_path = 'D:/Output_path/raster_calc_output.tif'
+
     parameters = {
-    'LAYERS':[slope_layer], # These are the list of all the layers loaded, these ae not the path
-    'EXPRESSION':'"Slope Layer@1"<0.3',
-    'EXTENT': None,
-    'CELL_SIZE':None,
-    'OUTPUT':'/vsimem/raster_calc_output.tif'}
+        'LAYERS': [slope_layer],                      # MUST be a Python list of QgsRasterLayer objects
+        'EXPRESSION': '"Slope Layer@1" < 0.3',        # reference layer by its name + @band
+        'OUTPUT': output_path,
+    }
     result = processing.run("native:rastercalc", parameters)
-    
+
+    # Always verify the file was actually written (some GDAL combos silently fail)
+    import os
+    assert os.path.exists(result['OUTPUT']), f"native:rastercalc did not produce output: {result['OUTPUT']}"
+
     raster_calc_layer = QgsRasterLayer(result['OUTPUT'], 'Raster Calculator Result')
     QgsProject.instance().addMapLayer(raster_calc_layer)
+
 rastercalc()
 '''

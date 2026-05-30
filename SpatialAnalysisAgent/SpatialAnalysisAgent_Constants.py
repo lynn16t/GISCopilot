@@ -101,7 +101,7 @@ Mode 3: CLARIFYING QUESTION — When critical information is missing or ambiguou
 
 Mode 4: CONVERSATIONAL REPLY — For questions, greetings, concept explanations,
    or any input that does not require GIS analysis execution.
-   Reply naturally in the same language the user is using.
+   Reply naturally in Chinese (see LANGUAGE section).
 
 Mode 5: KNOWLEDGE UPDATE — When you discover a reusable rule, convention, or
    data-specific insight during the conversation that would help future tasks
@@ -136,8 +136,23 @@ Do NOT ask about:
 
 === LANGUAGE ===
 
-Reply in the same language the user writes in. If they write in Chinese,
-reply in Chinese.
+ALWAYS reply in Simplified Chinese (简体中文), regardless of the language the
+user writes in. This includes:
+- Task summaries (Mode 1)
+- Refined task descriptions after [TASK_CONFIRMED]
+- Clarifying questions (Mode 3)
+- Conversational replies (Mode 4)
+- Knowledge entries (Mode 5)
+
+The ONLY content that should remain in English is:
+- Tool IDs (e.g., qgis:aspect, gdal:rastercalculator)
+- Layer / file names exactly as provided by the user
+- Parameter keys (e.g., INPUT, OUTPUT, TARGET_CRS)
+- The literal control tags [TASK_CONFIRMED] and [KNOWLEDGE_UPDATE]
+- CRS codes (e.g., EPSG:4326)
+
+Even if the user writes in English, reply in Chinese. Do NOT mirror the user's
+language; the user's working language is Chinese.
 """
 
 #********************************************************************************************************************************************************************
@@ -465,6 +480,13 @@ operation_requirement = [
     "When using `native:selectbylocation` (or any select-by-* algorithm), the algorithm does NOT produce a new output layer — it creates a selection set on the INPUT layer in-place. Therefore `result['OUTPUT']` IS the input layer object itself, not a separate layer. To export selected features, call `native:saveselectedfeatures` with the ORIGINAL INPUT LAYER (the one you passed as INPUT), NOT `result['OUTPUT']`.",
     "When creating charts/plots (bar, scatter, box, etc.): use `seaborn` by default; save the result (html/image) to the output directory and only print the file path; do NOT load the output into QGIS. For scatter plots, use 'qgis:vectorlayerscatterplot' (NOT 'native:scatterplot' or 'qgis:scatterplot').",
 
+    # === [关键: 中间产物落盘验证 - 避免静默失败] ===
+    "MANDATORY after EVERY `processing.run(...)` that writes to a real file path (not TEMPORARY_OUTPUT): immediately add `assert os.path.exists(<the-output-path>), f'<algorithm name> did not produce output: {<the-output-path>}'`. The assert MUST include a descriptive f-string message identifying WHICH step failed — a bare `assert os.path.exists(p)` raises a useless `AssertionError` with no location info, forcing the debugger to guess. Examples of CORRECT asserts (do this): `assert os.path.exists(aspect_path), f'qgis:aspect did not write: {aspect_path}'` / `assert os.path.exists(buffer_path), f'native:buffer step 4 silent fail: {buffer_path}'`. Examples of WRONG asserts (do NOT do this): `assert os.path.exists(p)` / `assert os.path.exists(result['OUTPUT'])`. Some QGIS/GDAL combinations (notably `gdal:polygonize`, `gdal:rastercalculator`, `gdal:rasterize`) return a result dict with success status but silently fail to write the file when the input is empty/all-NoData or has an unsupported driver. Without this assert + message, downstream steps fail with cryptic 'Could not load source layer' errors and waste debug rounds.",
+    "When using `gdal:rastercalculator`, NEVER set `NO_DATA` unless the user explicitly asks to mask a specific value as nodata. Setting `NO_DATA=0` is a common pitfall: it marks ALL cells where the FORMULA result equals 0 as nodata, which for binary masks `(A>X)*1` discards the entire 'false' region and can produce a raster of all-nodata if the condition is rarely true. If you need a binary mask, write the 0/1 raster without NO_DATA and filter downstream (e.g., polygonize then `native:extractbyattribute` on `DN=1`).",
+    "NEVER import `QgsRasterCalculator` or `QgsRasterCalculatorEntry` when calling `processing.run('native:rastercalc', ...)` — the processing-algorithm path does NOT need those C++ classes. If you do need them (e.g. low-level direct API), import from `qgis.analysis`, NOT `qgis.core`: `from qgis.analysis import QgsRasterCalculator, QgsRasterCalculatorEntry`. Importing from `qgis.core` raises `cannot import name 'QgsRasterCalculatorEntry' from 'qgis.core'`. Default to the processing.run path; only fall back to direct API if processing.run is insufficient.",
+    "Use forward slashes `/` consistently in file paths (e.g. `f'{output_dir}/PA_aspect.tif'`), NOT `os.path.join` on Windows — `os.path.join` produces mixed-slash paths like `F:/foo/output\\bar.tif` that some GDAL drivers handle inconsistently. If you must use `os.path.join`, follow with `.replace(os.sep, '/')`.",
+    "PREFER `native:rastercalc` over `gdal:rastercalculator` on Windows. The GDAL variant shells out to `gdal_calc.bat`, and cmd.exe mis-parses the FORMULA expression (`>`, `*`, `(`, `)` are special characters) and the forward-slash file paths, causing 'The filename, directory name, or volume label syntax is incorrect' / 'Process returned error code 1'. The `native:rastercalc` path is pure QGIS Python with no shell layer and always works. Convert any `(A>X)*1` style formula to `\"<layer_name>@<band>\" > X` expression with `native:rastercalc`, e.g.: parameters = {'LAYERS': [layer], 'EXPRESSION': '\"aspect@1\" > 100', 'OUTPUT': path}. Only fall back to `gdal:rastercalculator` if the task explicitly demands a numpy function (e.g. `logical_and`, `where`) that native:rastercalc cannot express.",
+
     # === [输出落盘] ===
     "If you are using the processing algorithm, make the output parameter to be the user's specified output directory . And use `QgsVectorLayer` to load the feature as a new layer: For example `Buffer_layer = QgsVectorLayer(result['OUTPUT'], 'Buffered output', 'ogr')` for the case of a shapefile.",
     "Similarly, if you used geopandas to generate a new layer, use `QgsVectorLayer` to load the feature as a new layer: For example `Buffer_layer = QgsVectorLayer(result['OUTPUT'], 'Buffered output', 'ogr')` for the case of a shapefile.",
@@ -551,6 +573,10 @@ operation_code_review_requirement = [
     "Verify `native:difference` is used when the task says 'difference', and `native:symmetricaldifference` only when the task literally says 'symmetric(al) difference'.",
     "Scatter plot must use 'qgis:vectorlayerscatterplot', NOT 'native:scatterplot' or 'qgis:scatterplot'.",
     "When using `gdal:proximity`, ensure shapefiles are rasterized first.",
+    "Verify EVERY `processing.run(...)` that writes to a real file path is followed by `assert os.path.exists(<path>)`. Missing assertion = silent failure waiting to happen on `gdal:polygonize`/`gdal:rastercalculator`/`gdal:rasterize`. Flag missing assertions as bugs.",
+    "Verify `gdal:rastercalculator` calls do NOT set `NO_DATA=0` (or any value that the FORMULA produces normally). Setting `NO_DATA=0` for a binary mask `(A>X)*1` mis-marks all 'false' cells as nodata. Flag this pattern.",
+    "Verify `QgsRasterCalculator` / `QgsRasterCalculatorEntry` are NEVER imported from `qgis.core` (they live in `qgis.analysis`). Also flag any `from qgis.analysis import QgsRasterCalculator*` when the code is using the `processing.run('native:rastercalc', ...)` path — that path does not need those classes at all; the import is dead weight at best, a future error vector at worst. Remove unused imports.",
+    "Verify file paths use forward slashes consistently. Flag `os.path.join` results in GDAL `INPUT`/`OUTPUT` parameters unless followed by `.replace(os.sep, '/')`.",
     "When using `native:selectbylocation` (or any select-by-* algorithm), verify that `native:saveselectedfeatures` receives the ORIGINAL INPUT LAYER (the layer passed as INPUT to the select algorithm), NOT `result['OUTPUT']`. The select algorithm modifies the input layer in-place — `result['OUTPUT']` is the same object as the input layer, but relying on it is error-prone. Always use the original input layer variable.",
 
     # === [输出落盘] ===

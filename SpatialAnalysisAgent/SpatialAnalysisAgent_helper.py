@@ -663,6 +663,7 @@ def extract_code_from_str(LLM_reply_str, verbose=False):
 
 # Cache: alg_id -> {'required': [...], 'optional': [...], 'all': set(...)} or None
 _TOOL_PARAM_CACHE = {}
+_RUNTIME_SIG_CACHE = {}  # 运行时签名缓存,key=alg_id,value=dict 或 None
 
 # Hard-coded parameter aliases for known LLM mix-ups. Used in the prompt
 # whitelist block to call out the most common confusions explicitly.
@@ -689,6 +690,16 @@ _TOOL_PARAM_CONFUSIONS = {
         "USES `INPUT_LAYER` (NOT `INPUT`).",
     "native:basicstatisticsforfields":
         "USES `INPUT_LAYER` (NOT `INPUT`).",
+    "native:rastercalc":
+        "USES `LAYERS` (a Python list of QgsRasterLayer objects), `EXPRESSION` "
+        "(string referencing layers by NAME@BAND e.g. '\"DEM@1\" > 100'), and "
+        "`OUTPUT`. Optional: EXTENT, CELL_SIZE, CRS, CREATION_OPTIONS. "
+        "Do NOT use `INPUT` — that key does NOT exist on this algorithm.",
+    "gdal:rastercalculator":
+        "Supports multi-input via INPUT_A/BAND_A through INPUT_F/BAND_F, with "
+        "FORMULA referring to inputs as 'A', 'B', ..., 'F'. Required: "
+        "INPUT_A, BAND_A, FORMULA, EXTENT_OPT, RTYPE, OUTPUT. Optional: "
+        "INPUT_B..F, BAND_B..F, NO_DATA, PROJWIN, OPTIONS, CREATION_OPTIONS, EXTRA.",
 }
 
 
@@ -784,6 +795,129 @@ def get_tool_param_whitelist(alg_id):
 
     _TOOL_PARAM_CACHE[alg_id] = parsed
     return parsed
+
+
+def get_runtime_signature(alg_id):
+    """直接问当前 QGIS:这个算法实际接受什么参数?
+
+    这是绕过 toml/json 文档过期问题的"事实之源"。返回 dict:
+        {
+            "tool_id": str,
+            "display_name": str,
+            "required": [{"name", "type", "description"}, ...],
+            "optional": [{"name", "type", "description", "default"}, ...],
+            "outputs":  [{"name", "type", "description"}, ...],
+        }
+    或 None(算法没注册 / QGIS API 不可用)。结果按进程缓存。
+    """
+    if alg_id in _RUNTIME_SIG_CACHE:
+        return _RUNTIME_SIG_CACHE[alg_id]
+
+    try:
+        from qgis.core import QgsApplication
+    except ImportError:
+        # 非 QGIS 环境(如单元测试) → 直接放弃
+        _RUNTIME_SIG_CACHE[alg_id] = None
+        return None
+
+    try:
+        reg = QgsApplication.processingRegistry()
+        alg = reg.algorithmById(alg_id)
+        if alg is None:
+            _RUNTIME_SIG_CACHE[alg_id] = None
+            return None
+
+        required, optional, outputs = [], [], []
+        for p in alg.parameterDefinitions():
+            cls_name = type(p).__name__
+            is_output = "Destination" in cls_name
+            try:
+                is_optional = bool(p.flags() & p.FlagOptional)
+            except Exception:
+                is_optional = False
+
+            entry = {
+                "name": p.name(),
+                "type": p.type(),
+                "description": p.description(),
+            }
+            try:
+                entry["default"] = p.defaultValue()
+            except Exception:
+                pass
+
+            if is_output:
+                outputs.append(entry)
+            elif is_optional:
+                optional.append(entry)
+            else:
+                required.append(entry)
+
+        sig = {
+            "tool_id": alg_id,
+            "display_name": alg.displayName(),
+            "required": required,
+            "optional": optional,
+            "outputs": outputs,
+        }
+        _RUNTIME_SIG_CACHE[alg_id] = sig
+        return sig
+    except Exception as e:
+        print(f"[get_runtime_signature] failed for {alg_id}: {e}")
+        _RUNTIME_SIG_CACHE[alg_id] = None
+        return None
+
+
+def build_runtime_signature_block(alg_ids):
+    """给一组工具 ID 生成"运行时真实签名"的 prompt 块。
+
+    这个块的优先级高于 toml-derived 的 whitelist 块 —— toml 可能写错
+    或滞后于 QGIS 版本,而 QGIS 自己 reportd 的签名永远是当前真相。
+    """
+    if not alg_ids:
+        return ""
+
+    sections = []
+    missing = []
+    for tid in alg_ids:
+        sig = get_runtime_signature(tid)
+        if sig is None:
+            missing.append(tid)
+            continue
+        req_names = [p["name"] for p in sig["required"]]
+        opt_names = [p["name"] for p in sig["optional"]]
+        out_names = [p["name"] for p in sig["outputs"]]
+        # 把 OUTPUT 类参数合并进必填(用户必须给输出路径)
+        full_required = req_names + out_names
+        all_allowed = full_required + opt_names
+
+        lines = [f"  {tid}  ({sig['display_name']}):"]
+        lines.append(f"    ALLOWED keys (the ONLY keys accepted by this QGIS build): {all_allowed}")
+        lines.append(f"    REQUIRED: {full_required}")
+        if opt_names:
+            lines.append(f"    OPTIONAL: {opt_names}")
+        sections.append("\n".join(lines))
+
+    if not sections:
+        return ""
+
+    header = (
+        "================================================================\n"
+        "RUNTIME-VERIFIED PARAMETER SIGNATURES — ABSOLUTE TRUTH\n"
+        "================================================================\n"
+        "The parameter lists below were just queried LIVE from your current\n"
+        "QGIS install (via QgsApplication.processingRegistry). Any key NOT\n"
+        "in ALLOWED for a given algorithm will be rejected with:\n"
+        "  ERROR_CODE_PARAM_UNKNOWN: <alg> does not accept parameter(s) [...]\n"
+        "Ignore conflicting examples in your training data or in the static\n"
+        "documentation that follows — these runtime signatures override them.\n"
+        "================================================================\n"
+    )
+    footer = "\n================================================================\n"
+    body = header + "\n".join(sections) + footer
+    if missing:
+        body += f"(Could not resolve runtime signature for: {missing} — falling back to static docs for those.)\n"
+    return body
 
 
 def build_parameter_whitelist_block(alg_ids):
@@ -1228,21 +1362,57 @@ def _preflight_check_call(alg, params, task, data_path="", params_opaque=False):
 
 
 def _preflight_check_param_keys(alg, params):
-    """Reject parameter keys not declared by the algorithm's TOML doc."""
+    """Reject parameter keys not declared by the algorithm.
+
+    优先级:
+      1. 运行时签名 (get_runtime_signature) —— 真相之源,直接问 QGIS
+      2. TOML whitelist —— fallback,可能滞后/不完整
+
+    历史教训: 旧版只用 TOML whitelist 会"伪造"假错误 —— 比如 native:rastercalc
+    的 TOML parameters 段只列了 INPUT/EXPRESSION/OUTPUT,而 QGIS 真正支持的是
+    LAYERS/EXPRESSION/EXTENT/CELL_SIZE/CRS/CREATION_OPTIONS/OUTPUT。AI 照
+    code_example 用 LAYERS,就被 preflight 误判成 ERROR_CODE_PARAM_UNKNOWN。
+    """
     if not params:
         return []
-    wl = get_tool_param_whitelist(alg)
-    if not wl or not wl.get("all"):
-        return []
+
+    # 1) 优先用运行时签名 —— 直接问 QGIS,永远是当前 build 的真相
+    sig = get_runtime_signature(alg)
+    allowed_set = None
+    source = None
+    if sig is not None:
+        allowed = set()
+        for entry in sig.get("required", []):
+            allowed.add(entry["name"])
+        for entry in sig.get("optional", []):
+            allowed.add(entry["name"])
+        for entry in sig.get("outputs", []):
+            allowed.add(entry["name"])
+        if allowed:
+            allowed_set = allowed
+            source = "runtime"
+
+    # 2) Fallback: 老的 TOML whitelist
+    if allowed_set is None:
+        wl = get_tool_param_whitelist(alg)
+        if not wl or not wl.get("all"):
+            return []
+        allowed_set = wl["all"]
+        source = "toml"
+
     used = {k for k in params.keys() if isinstance(k, str)}
-    invalid = sorted(used - wl["all"])
+    invalid = sorted(used - allowed_set)
     if not invalid:
         return []
-    valid_sorted = sorted(wl["all"])
-    suggestion = (
-        f"Use only these keys: {valid_sorted}. "
-        + (f"Hint: {_TOOL_PARAM_CONFUSIONS[alg]}" if alg in _TOOL_PARAM_CONFUSIONS else "")
-    ).strip()
+
+    valid_sorted = sorted(allowed_set)
+    suggestion_parts = [
+        f"Use only these keys (source={source}): {valid_sorted}."
+    ]
+    if alg in _TOOL_PARAM_CONFUSIONS:
+        suggestion_parts.append(f"Hint: {_TOOL_PARAM_CONFUSIONS[alg]}")
+    suggestion = " ".join(suggestion_parts).strip()
+
     return [(
         "ERROR_CODE_PARAM_UNKNOWN",
         f"`{alg}` does not accept parameter(s) {invalid}.",

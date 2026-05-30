@@ -335,20 +335,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.error_traceback = None
         self.generated_code = None
 
-        # from .install_packages.check_packages import check_and_install_libraries
-        # Run the check before the class definition
-        # current_script_dir = os.path.dirname(os.path.abspath(__file__))
-        # required_packages = os.path.join(current_script_dir, 'install_packages', 'requirements.txt')
-
-        # check_and_install_libraries(required_packages)
-        # self.library_check_thread = LibraryCheckThread(required_packages)
-        # self.library_check_thread.finished_checking.connect(self.handle_missing_libraries)
-        # self.library_check_thread.start()  # Start the background thread
-
-        # # Start the OpenAI version check thread
-        # self.version_check_thread = VersionCheckThread()
-        # self.version_check_thread.version_check_completed.connect(self.handle_version_check)
-        # self.version_check_thread.start()
+        # First-run / 后续启动:后台检查依赖,有缺包或版本不匹配才弹窗
+        self._maybe_start_dependency_check()
 
         self.chatgpt_ans_textBrowser.setOpenExternalLinks(False)
         self.chatgpt_ans_textBrowser.setOpenLinks(False)
@@ -426,6 +414,13 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.highlighter = PythonHighlighter(self.output_text_edit.document())
         self.code_highlighter = PythonHighlighter(self.CodeEditor.document(), always_highlight=True)
 
+        # 隐藏顶部"日志"区(output_text_edit),让中间对话框 chatgpt_ans_textBrowser
+        # 接管原本被它占用的垂直空间。已有写入 output_text_edit 的代码保持不变,
+        # 只是用户看不到 —— 想恢复就把下面三行注释掉。
+        self.output_text_edit.hide()
+        self.chatgpt_ans_textBrowser.setMaximumHeight(16777215)  # Qt 的"无上限"
+        self.chatgpt_ans_textBrowser.setMinimumHeight(200)
+
         # Set default workspace directory to plugin directory
         # （必须在 init_knowledge_for_workspace 之前，否则 workspace_dir 为空）
         workspace_dir = os.path.join(current_script_dir, 'Default_workspace')
@@ -476,7 +471,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self.agent.state_changed.connect(self._on_state_changed, Qt.ConnectionType.QueuedConnection)
         self.agent.status_update.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False), Qt.ConnectionType.QueuedConnection)
         self.agent.chat_response.connect(lambda msg: self.update_chatgpt_ans_textBrowser(msg, is_user=False), Qt.ConnectionType.QueuedConnection)
-        self.agent.error_occurred.connect(lambda msg: self.update_chatgpt_ans_textBrowser(f"Error: {msg}", is_user=False), Qt.ConnectionType.QueuedConnection)
+        self.agent.error_occurred.connect(lambda msg: self.update_chatgpt_ans_textBrowser(f"错误: {msg}", is_user=False), Qt.ConnectionType.QueuedConnection)
 
         # Phase 3: 连接分析/执行阶段的输出信号
         self.agent.execution_output.connect(self.update_output, Qt.ConnectionType.QueuedConnection)
@@ -605,7 +600,10 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 QMessageBox.critical(self, "Error", f"Failed to load code:\n{str(e)}")
 
     def run_generated_code(self):
-        self.report_web_view.setHtml('')
+        # report_web_view 是个未初始化的孤儿属性(refactor 残留),用 hasattr 守住,
+        # 避免点"运行代码"按钮报 AttributeError。
+        if hasattr(self, 'report_web_view'):
+            self.report_web_view.setHtml('')
         self.append_execution_output("Running code ...")
         # Get the code from the CodeEditor
         code_to_run = self.CodeEditor.toPlainText()
@@ -671,62 +669,84 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             except Exception as e:
                 print(f"Error creating default workspace: {e}")
 
+    def _maybe_start_dependency_check(self):
+        """首次启动(或 requirements.txt 内容变化时)后台检查依赖。
+        若全部就绪则静默跳过;若有缺包/版本不符则弹窗提示安装。"""
+        try:
+            import hashlib
+            current_script_dir = os.path.dirname(os.path.abspath(__file__))
+            req_file = os.path.join(current_script_dir, 'install_packages', 'requirements.txt')
+            if not os.path.isfile(req_file):
+                return
+            with open(req_file, 'rb') as f:
+                req_hash = hashlib.md5(f.read()).hexdigest()[:12]
+            settings = QSettings()
+            self._deps_flag_key = f"SpatialAnalysisAgent/deps_checked_{req_hash}"
+            if settings.value(self._deps_flag_key, "0") == "1":
+                return  # 本版本 requirements.txt 已检查过,跳过
+            self._dep_check_thread = LibraryCheckThread(req_file)
+            self._dep_check_thread.finished_checking.connect(self.handle_missing_libraries)
+            self._dep_check_thread.start()
+        except Exception as e:
+            print(f"[deps] 依赖检查启动失败,已跳过: {e}")
+
     def handle_missing_libraries(self, missing_packages, version_mismatches, force_reinstall=False):
         has_issues = False
         message = ""
 
-        # Check if binary incompatibility was detected
         if force_reinstall:
             has_issues = True
-            message += "BINARY INCOMPATIBILITY DETECTED:\n\n"
-            message += "NumPy or another core library appears to be incompatible.\n"
-            message += "This will be fixed by upgrading all packages to correct versions.\n\n"
+            message += "检测到包之间二进制不兼容(通常是 NumPy 等核心库版本错位)。\n"
+            message += "需要重新安装所有相关包以修复。\n\n"
 
-        # Check for missing packages
         if missing_packages:
             has_issues = True
-            message += "The following Python packages are MISSING:\n\n"
-            message += "\n".join(missing_packages)
+            message += "以下 Python 依赖包缺失:\n\n"
+            message += "\n".join(f"  • {p}" for p in missing_packages)
             message += "\n\n"
 
-        # Check for version mismatches
         if version_mismatches:
             has_issues = True
-            message += "The following packages have VERSION MISMATCHES:\n\n"
+            message += "以下依赖包版本与要求不符:\n\n"
             for package_name, (required_spec, installed_version) in version_mismatches.items():
                 if installed_version is None:
-                    message += f"• {package_name}: NOT INSTALLED (required: {required_spec})\n"
+                    message += f"  • {package_name}:未安装 (需要 {required_spec})\n"
                 else:
-                    message += f"• {package_name}: installed {installed_version}, required {required_spec}\n"
+                    message += f"  • {package_name}:已装 {installed_version},需要 {required_spec}\n"
             message += "\n"
 
         if has_issues:
-            message += "Would you like to install/fix these packages now?\n"
-
-            reply = QMessageBox.question(self, 'Missing or Mismatched Dependencies',
-                                         message,
-                                         QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+            message += "是否现在自动安装/修复?(可能需要几分钟)"
+            reply = QMessageBox.question(
+                self, '依赖检查', message,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
             if reply == QMessageBox.StandardButton.Yes:
                 if not check_pip_installed():
-                    reply = QMessageBox.question(self, "Pip Not Found",
-                                                 "The 'pip' tool is not available in this Python environment.\n"
-                                                 "Please ensure pip is installed before continuing.\n\n"
-                                                 "Would you like to try installing it automatically?",
-                                                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                                                 )
-                    if reply == QMessageBox.StandardButton.Yes:
-                        success = self.install_pip_with_progress()
-                        return
+                    pip_reply = QMessageBox.question(
+                        self, '未找到 pip',
+                        "当前 Python 环境里没有 pip,无法安装依赖。\n是否尝试自动安装 pip?",
+                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                    )
+                    if pip_reply == QMessageBox.StandardButton.Yes:
+                        self.install_pip_with_progress()
+                    return
 
-                # Pass requirements file path and force_reinstall flag
                 current_script_dir = os.path.dirname(os.path.abspath(__file__))
                 required_packages = os.path.join(current_script_dir, 'install_packages', 'requirements.txt')
                 self.install_libraries_with_progress(required_packages, force_reinstall)
 
-                # Optional: remember that user responded yes, to avoid checking again
                 settings = QSettings()
-                required_libraries = read_libraries_from_file(required_packages)
-                settings.setValue("cached_libraries", required_libraries)
+                settings.setValue("cached_libraries", read_libraries_from_file(required_packages))
+
+        # 不管最后用户选 Yes / No,只要这一次走完检查流程,就标记本版本 requirements.txt 已处理,
+        # 避免每次打开都被打扰。若 requirements.txt 后续被修改,hash 变化会重新触发。
+        try:
+            if hasattr(self, '_deps_flag_key'):
+                QSettings().setValue(self._deps_flag_key, "1")
+        except Exception:
+            pass
 
     def import_libraries(self):
         """Dynamically import the third-party libraries after ensuring they're installed."""
@@ -1276,7 +1296,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
 
     def clear_report(self):
         if not self.data_pathLineEdit.toPlainText().strip() and self.task_LineEdit.toPlainText().strip():
-            self.report_web_view.setHtml('')
+            if hasattr(self, 'report_web_view'):
+                self.report_web_view.setHtml('')
             # self.refresh_report_Btn.clicked.connect(self.refresh_report)
         else:
             return
@@ -1397,11 +1418,13 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 f.write(f'<html><body><img src="file:///{normalized_path}" alt="Report Image" /></body></html>')
 
             # Load the generated HTML file that contains the image
-            self.report_web_view.load(QUrl.fromLocalFile(image_html_path))
+            if hasattr(self, 'report_web_view'):
+                self.report_web_view.load(QUrl.fromLocalFile(image_html_path))
 
         elif file_extension == '.html':  # Handle HTML files
             # Directly load the HTML file
-            self.report_web_view.load(QUrl.fromLocalFile(generated_report_path))
+            if hasattr(self, 'report_web_view'):
+                self.report_web_view.load(QUrl.fromLocalFile(generated_report_path))
 
         else:
             print("Unsupported file type.")
@@ -1454,7 +1477,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         self._chat_thread.reply_ready.connect(
             lambda reply: self.update_chatgpt_ans_textBrowser(reply, is_user=False))
         self._chat_thread.error_occurred.connect(
-            lambda err: self.update_chatgpt_ans_textBrowser(f"Error: {err}", is_user=False))
+            lambda err: self.update_chatgpt_ans_textBrowser(f"错误: {err}", is_user=False))
         self._chat_thread.start()
 
     def _sync_agent_params(self):
@@ -1476,7 +1499,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
 
         if intent == 'CHAT':
             # 统一走 AgentController 对话循环，保留完整会话上下文
-            self.update_chatgpt_ans_textBrowser("Generating response...", is_user=False)
+            self.update_chatgpt_ans_textBrowser("正在生成回复...", is_user=False)
             self.run_button.setEnabled(False)
             self.task_LineEdit.setEnabled(False)
             self.agent.handle_text_input(user_message)
@@ -1484,13 +1507,13 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         elif intent == 'GIS_TASK':
             if current_model == 'gpt-5':
                 self.update_chatgpt_ans_textBrowser(
-                    "Analyzing the task (may take some time while GPT-5 is reasoning)...", is_user=False)
+                    "正在分析任务（GPT-5 推理中,可能稍慢）...", is_user=False)
             else:
-                self.update_chatgpt_ans_textBrowser("Analyzing the task...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("正在分析任务...", is_user=False)
             self._run_via_agent()
 
         elif intent == 'PLAN_MODIFY':
-            self.update_chatgpt_ans_textBrowser("Updating the plan...", is_user=False)
+            self.update_chatgpt_ans_textBrowser("正在更新方案...", is_user=False)
             if hasattr(self, 'agent_controller') and self.agent_controller:
                 self.agent_controller.handle_plan_modification(user_message)
             else:
@@ -1498,17 +1521,17 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
 
         elif intent == 'UNCLEAR':
             reply = QMessageBox.question(
-                self, "Intent Confirmation",
-                "Would you like me to perform spatial analysis on your data,\n"
-                "or just chat about this topic?",
+                self, "意图确认",
+                "您是希望对数据进行空间分析,\n"
+                "还是只想就这个话题聊一聊？",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No)
             if reply == QMessageBox.StandardButton.Yes:
-                self.update_chatgpt_ans_textBrowser("Analyzing the task...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("正在分析任务...", is_user=False)
                 self._run_via_agent()
             else:
                 # 统一走 AgentController 对话循环，保留完整会话上下文
-                self.update_chatgpt_ans_textBrowser("Generating response...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("正在生成回复...", is_user=False)
                 self.run_button.setEnabled(False)
                 self.task_LineEdit.setEnabled(False)
                 self.agent.handle_text_input(user_message)
@@ -1524,7 +1547,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
 
 
         if not user_message:
-            self.update_chatgpt_ans_textBrowser(f"Please enter a task in the task field.", is_user=False)
+            self.update_chatgpt_ans_textBrowser(f"请在任务输入框中输入您的请求。", is_user=False)
             return  # Stop further execution if the task is empty
         # print("Sending message:", self.task_LineEdit.toPlainText())  # Debugging statement
         # Emit the user's message in chatgpt_ans first
@@ -1543,9 +1566,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             return  # 不走原有的 run_script 逻辑
         
         
-        self.update_chatgpt_ans_textBrowser(
-            f"--------------------------------------------------------------------------------------------",
-            is_user=None)
+        # 不再插入虚线分隔符 —— User/AI 角色标签本身就够清晰,
+        # 第一次对话时这串虚线还会在顶部留一片空白条。
         self.append_message(user_message)
         self.task_LineEdit.clear()
 
@@ -1561,7 +1583,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
 
         # ── 统一入口：所有消息走 handle_text_input → 对话循环 → OutputParser 路由 ──
         # 不再使用意图分类线程；由 LLM + OutputParser 在对话循环中判断意图
-        self.update_chatgpt_ans_textBrowser("Processing...", is_user=False)
+        self.update_chatgpt_ans_textBrowser("处理中...", is_user=False)
         self.run_button.setEnabled(False)
         self.task_LineEdit.setEnabled(False)
         self.agent.handle_text_input(user_message)
@@ -1694,7 +1716,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     def stop_script(self):
         if self.thread:
             self.thread.terminate()
-            self.update_chatgpt_ans_textBrowser(f"Script terminated")
+            self.update_chatgpt_ans_textBrowser(f"脚本已终止")
             # print("Script terminated")
             # Re-enable the send_button
         self.run_button.setEnabled(True)
@@ -1950,7 +1972,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 task_breakdown_text = "\n".join(self.task_breakdown_lines)
                 # Create clickable "thoughts" link instead of showing full text
                 thoughts_link = self.format_ai_thoughts_link(task_breakdown_text)
-                self.update_chatgpt_ans_textBrowser(f"Analysis result: {thoughts_link}")
+                self.update_chatgpt_ans_textBrowser(f"分析结果: {thoughts_link}")
                 self.task_breakdown_lines = []  # Reset the accumulator
             else:
                 # Accumulate the line
@@ -1964,7 +1986,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 data_attributes_text = "\n".join(self.data_attributes_lines)
                 # Create clickable "data overview" link instead of showing full text
                 data_link = self.format_data_attributes_link(data_attributes_text)
-                self.update_chatgpt_ans_textBrowser(f"Analysis result: {data_link}")
+                self.update_chatgpt_ans_textBrowser(f"分析结果: {data_link}")
                 self.data_attributes_lines = []  # Reset the accumulator
             else:
                 # Accumulate the line
@@ -1983,7 +2005,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 html_graph_path = line.split("GRAPH_SAVED:")[1].strip()
                 self.update_graph(html_graph_path)
                 self.update_chatgpt_ans_textBrowser(
-                    "Geoprocessing workflow is ready (see Geoprocessing Workflow tab).")  # Emit the message to chatgpt_ans
+                    "处理流程已生成（请查看「处理流程」标签页）。")  # Emit the message to chatgpt_ans
 
             elif "Output:" in line:  # Check for "Output" flag
                 generated_output = line.split("Output:")[1].strip()
@@ -1997,7 +2019,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                     # self.update_chatgpt_ans_textBrowser("Selecting tools...", is_user=False)
                     # Format tool IDs as clickable links
                     linked_tools = self.format_tool_ids_as_links(tool_IDs)
-                    self.update_chatgpt_ans_textBrowser(f"Selected tool(s): {linked_tools}")
+                    self.update_chatgpt_ans_textBrowser(f"已选工具: {linked_tools}")
 
             elif "TASK_BREAKDOWN:" in line:
                 # Start accumulating task breakdown lines
@@ -2011,14 +2033,14 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                     data_content = line.split("data overview: ")[1].strip()
                     # Create clickable "data overview" link instead of showing full text
                     data_link = self.format_data_attributes_link(data_content)
-                    self.update_chatgpt_ans_textBrowser(f"Analysis result: {data_link}")
+                    self.update_chatgpt_ans_textBrowser(f"分析结果: {data_link}")
                     # return  # Don't add to output_text_edit
-                
+
             elif "AI IS SELECTING THE APPROPRIATE TOOL(S) ..." in line:
-                self.update_chatgpt_ans_textBrowser("Selecting appropriate tools...", is_user=False)
-                
+                self.update_chatgpt_ans_textBrowser("正在选择合适的工具...", is_user=False)
+
             elif "Fine tuned query:" in line:
-                self.update_chatgpt_ans_textBrowser("Task analysis complete. Tuning query...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("任务分析完成，正在优化查询...", is_user=False)
 
             # elif "TOOL SELECT PROMPT" in line:
             #     self.update_chatgpt_ans_textBrowser("Creating tool selection prompt...", is_user=False)
@@ -2027,18 +2049,18 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             #     self.update_chatgpt_ans_textBrowser("Tools selected successfully...", is_user=False)
                 
             elif "---------- AI IS GENERATING THE GEOPROCESSING WORKFLOW FOR THE TASK ----------" in line:
-                self.update_chatgpt_ans_textBrowser("Generating geoprocessing workflow...", is_user=False)
-                
+                self.update_chatgpt_ans_textBrowser("正在生成处理流程...", is_user=False)
+
             # elif "OPERATION PROMPT:" in line:
             #     self.update_chatgpt_ans_textBrowser("Creating operation prompt...", is_user=False)
-                
+
             elif "---------- AI IS GENERATING THE OPERATION CODE ----------" in line:
                 current_model = self.modelNameComboBox.currentText()
                 if current_model == 'gpt-5':
                     self.update_chatgpt_ans_textBrowser(
-                        "Generating operation code (may take some time while GPT-5 is reasoning)...", is_user=False)
+                        "正在生成代码（GPT-5 推理中,可能稍慢）...", is_user=False)
                 else:
-                    self.update_chatgpt_ans_textBrowser("Generating operation code...", is_user=False)
+                    self.update_chatgpt_ans_textBrowser("正在生成代码...", is_user=False)
 
                 
             # elif "OPERATION CODE GENERATED SUCCESSFULLY" in line:
@@ -2047,7 +2069,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
 
                 
             elif "----AI IS REVIEWING THE GENERATED CODE" in line:
-                self.update_chatgpt_ans_textBrowser("Reviewing generated code...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("正在审查生成的代码...", is_user=False)
 
             # elif "OPERATION CODE GENERATED AND REVIEWED SUCCESSFULLY" in line:
             #     self.update_chatgpt_ans_textBrowser("Code generation and review completed. View at Generated Code tab",
@@ -2056,35 +2078,35 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
 
                 
             elif "AI IS EXAMINING THE DATA ..." in line:
-                self.update_chatgpt_ans_textBrowser("Examining the data ...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("正在检查数据...", is_user=False)
                 # return  # Don't add status message to output_text_edit
-                
+
             # elif "MODEL CONFIGURATION DEBUG INFO" in line:
             #     self.update_chatgpt_ans_textBrowser("Configuring AI model...", is_user=False)
-                
+
             elif "STARTING ANALYSIS..." in line:
-                self.update_chatgpt_ans_textBrowser("Starting detailed analysis...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("正在开始详细分析...", is_user=False)
                 return  # Don't add status message to output_text_edit
-                
+
             elif "Generating workflow" in line:
-                self.update_chatgpt_ans_textBrowser("Generating workflow...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("正在生成处理流程...", is_user=False)
                 return  # Don't add status message to output_text_edit
 
             elif "Generating code" in line or "Creating code" in line:
-                self.update_chatgpt_ans_textBrowser("Generating code...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("正在生成代码...", is_user=False)
                 return  # Don't add status message to output_text_edit
-                
+
             elif "Processing data" in line or "Analyzing data" in line:
-                self.update_chatgpt_ans_textBrowser("Processing data...", is_user=False)
+                self.update_chatgpt_ans_textBrowser("正在处理数据...", is_user=False)
                 return  # Don't add status message to output_text_edit
 
             elif "AI IS DEBUGGING THE CODE..." in line:
                 current_model = self.modelNameComboBox.currentText()
                 if current_model == 'gpt-5':
                     self.update_chatgpt_ans_textBrowser(
-                        "An error occurred, debugging code (may take some time while GPT-5 is reasoning)...", is_user=False)
+                        "出错了,正在调试代码（GPT-5 推理中,可能稍慢）...", is_user=False)
                 else:
-                    self.update_chatgpt_ans_textBrowser("An error occurred, debugging code...", is_user=False)
+                    self.update_chatgpt_ans_textBrowser("出错了,正在调试代码...", is_user=False)
                 # return  # Don't add status message to output_text_edit
 
             elif "-------------- Running code (trial #" in line:
@@ -2094,9 +2116,9 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 if trial_match:
                     current_trial = trial_match.group(1)
                     total_trials = trial_match.group(2)
-                    self.update_chatgpt_ans_textBrowser(f"Executing the code... (Trial {current_trial} / {total_trials})", is_user=False)
+                    self.update_chatgpt_ans_textBrowser(f"正在执行代码... (第 {current_trial} 次 / 共 {total_trials} 次)", is_user=False)
                 else:
-                    self.update_chatgpt_ans_textBrowser("Executing the code...", is_user=False)
+                    self.update_chatgpt_ans_textBrowser("正在执行代码...", is_user=False)
                 return  # Don't add status message to output_text_edit
 
             # elif "Running code2" in line or "Running code (trial #" in line:
@@ -2109,7 +2131,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             #     return  # Don't add status message to output_text_edit
 
             elif "Successfully executed code:" in line:
-                self.update_chatgpt_ans_textBrowser("Code execution completed", is_user=False)
+                self.update_chatgpt_ans_textBrowser("代码执行完成", is_user=False)
 
 
             elif "CODE_READY_URLENCODED:" in line:
@@ -2122,9 +2144,9 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                     self.CodeEditor.setPlainText(self.latest_generated_code)
                     self.CodeEditor.moveCursor(QTextCursor.Start)
                     # Also give a friendly nudge in the chat panel (optional)
-                    self.update_chatgpt_ans_textBrowser("Code generation completed (see Generated Code tab).", is_user=False)
+                    self.update_chatgpt_ans_textBrowser("代码生成完成（请查看「代码」标签页）。", is_user=False)
                 except Exception as e:
-                    self.update_chatgpt_ans_textBrowser(f"Failed to decode generated code: {e}", is_user=False)
+                    self.update_chatgpt_ans_textBrowser(f"解码生成的代码失败: {e}", is_user=False)
                 return  # Don't add code pattern to output_text_edit
 
 
@@ -2138,9 +2160,9 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                     self.CodeEditor.setPlainText(self.latest_generated_code)
                     self.CodeEditor.moveCursor(QTextCursor.Start)
                     # Also give a friendly nudge in the chat panel (optional)
-                    self.update_chatgpt_ans_textBrowser("Final code generated (see Generated Code tab).", is_user=False)
+                    self.update_chatgpt_ans_textBrowser("最终代码已生成（请查看「代码」标签页）。", is_user=False)
                 except Exception as e:
-                    self.update_chatgpt_ans_textBrowser(f"Failed to decode generated code: {e}", is_user=False)
+                    self.update_chatgpt_ans_textBrowser(f"解码生成的代码失败: {e}", is_user=False)
                 return  # Don't add code pattern to output_text_edit
 
             elif "CODE_DEBUGGED:" in line:
@@ -2152,9 +2174,9 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                     self.CodeEditor.setPlainText(self.latest_generated_code)
                     self.CodeEditor.moveCursor(QTextCursor.Start)
                     # Also give a friendly nudge in the chat panel (optional)
-                    self.update_chatgpt_ans_textBrowser("Code debugging completed (see Generated Code tab).", is_user=False)
+                    self.update_chatgpt_ans_textBrowser("代码调试完成（请查看「代码」标签页）。", is_user=False)
                 except Exception as e:
-                    self.update_chatgpt_ans_textBrowser(f"Failed to process debugged code: {e}", is_user=False)
+                    self.update_chatgpt_ans_textBrowser(f"处理调试后代码失败: {e}", is_user=False)
                 return  # Don't add code pattern to output_text_edit
 
 
@@ -2175,7 +2197,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         if success:
             # self.output_text_edit.append("The script ran successfully.")
             # self.output_text_edit.insertPlainText("The script ran successfully2.")
-            self.update_chatgpt_ans_textBrowser(f"Done")
+            self.update_chatgpt_ans_textBrowser(f"完成")
             self.run_button.setEnabled(True)
             self.clear_textboxesBtn.setEnabled(True)
             self.task_LineEdit.setEnabled(True)
@@ -2183,8 +2205,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     
         else:
             # self.output_text_edit.append("The script finished with errors.")
-            self.output_text_edit.insertPlainText("The script finished with errors.")
-            self.update_chatgpt_ans_textBrowser(f"The script finished with errors.")
+            self.output_text_edit.insertPlainText("脚本执行失败。")
+            self.update_chatgpt_ans_textBrowser(f"脚本执行失败。")
             self.run_button.setEnabled(True)
             self.clear_textboxesBtn.setEnabled(True)
             self.task_LineEdit.setEnabled(True)
@@ -2209,23 +2231,117 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             self.append_execution_output("The script finished with errors.")
 
     def clear_textboxes(self):
-        # Stop any running agent task and return to IDLE
-        if hasattr(self, 'agent') and self.agent.get_state_name() != "IDLE":
-            self.agent.handle_user_action(UserAction.CANCEL)
-        # Also stop legacy thread if running
-        if hasattr(self, 'thread') and self.thread and self.thread.isRunning():
-            self.thread.terminate()
-            self.thread.wait(2000)
+        """清空按钮：终止所有正在跑的对话/脚本，清空 UI 和 LLM 上下文。
+
+        必须把 Agent 的 worker、旧 _chat_thread、旧 ScriptThread 都停掉,
+        否则它们还会继续把流式 chunk 写回 chatgpt_ans_textBrowser,
+        让"清空"看起来没生效。然后调用 agent.reset() 清空 session.messages,
+        保证下一轮对话不会带着旧上下文。
+        """
+        # 1) 停掉 AgentController 的 worker，并清空 session（messages、plan、results...）
+        if hasattr(self, 'agent') and self.agent is not None:
+            try:
+                self.agent.reset()
+            except Exception as e:
+                print(f"[clear_textboxes] agent.reset() failed: {e}")
+
+        # 2) 停掉旧的 chat 子线程（ChatAnswerThread）
+        if hasattr(self, '_chat_thread') and self._chat_thread is not None:
+            try:
+                if self._chat_thread.isRunning():
+                    self._chat_thread.terminate()
+                    self._chat_thread.wait(2000)
+            except Exception as e:
+                print(f"[clear_textboxes] _chat_thread stop failed: {e}")
+            self._chat_thread = None
+
+        # 3) 停掉旧的脚本执行线程（ScriptThread）
+        if hasattr(self, 'thread') and self.thread is not None:
+            try:
+                if self.thread.isRunning():
+                    self.thread.terminate()
+                    self.thread.wait(2000)
+            except Exception as e:
+                print(f"[clear_textboxes] thread stop failed: {e}")
+            self.thread = None
+
+        # 4) 清空 UI 文本（先清 history,再 clear 文本框,避免下一次重画时把旧内容画回来）
+        self.conversation_history = []
         self.output_text_edit.clear()
         self.task_LineEdit.clear()
         self.chatgpt_ans_textBrowser.clear()
-        self.conversation_history = []
-        # Reset UI to IDLE state
+
+        # 5) 还原任务级状态
+        self.task = ""
+        if hasattr(self, 'task_breakdown_lines'):
+            self.task_breakdown_lines = []
+        if hasattr(self, 'data_attributes_lines'):
+            self.data_attributes_lines = []
+
+        # 6) 通知 UI 切回 IDLE 视图（按钮组、底部区域等）
         self._on_state_changed("IDLE")
 
+        # 7) 给用户一个明确反馈
+        self.chatgpt_ans_textBrowser.append("已清空对话与上下文。")
+
     def interrupt(self):
-        if self.thread:
-            self.thread.stop()  # Call the stop method to set the flag
+        """中断按钮:停掉所有正在跑的任务,但保留对话历史(区别于"清空")。
+
+        - AgentController:发 INTERRUPT,内部会 terminate worker 并把状态置回 IDLE,
+          session.messages 不动。
+        - _chat_thread / 旧 ScriptThread:正在跑就 terminate 掉。
+        - 同步把 UI 的"Processing..."等等状态收掉,按钮组恢复可点。
+        """
+        interrupted = False
+
+        # 1) AgentController:只中断,不清 session
+        if hasattr(self, 'agent') and self.agent is not None:
+            try:
+                state_name = self.agent.get_state_name()
+                if state_name in ("ANALYZING", "EXECUTING", "CONVERSING"):
+                    self.agent.handle_user_action(UserAction.INTERRUPT)
+                    interrupted = True
+            except Exception as e:
+                print(f"[interrupt] agent INTERRUPT failed: {e}")
+
+        # 2) 旧的对话子线程
+        if hasattr(self, '_chat_thread') and self._chat_thread is not None:
+            try:
+                if self._chat_thread.isRunning():
+                    self._chat_thread.terminate()
+                    self._chat_thread.wait(2000)
+                    interrupted = True
+            except Exception as e:
+                print(f"[interrupt] _chat_thread stop failed: {e}")
+
+        # 3) 旧的脚本执行线程
+        if hasattr(self, 'thread') and self.thread is not None:
+            try:
+                if self.thread.isRunning():
+                    # ScriptThread 有自己的 stop() 协作式停止;不行再 terminate
+                    if hasattr(self.thread, 'stop'):
+                        self.thread.stop()
+                    if self.thread.isRunning():
+                        self.thread.terminate()
+                        self.thread.wait(2000)
+                    interrupted = True
+            except Exception as e:
+                print(f"[interrupt] thread stop failed: {e}")
+
+        # 4) UI 复位:输入框、发送按钮恢复可用,状态切回 IDLE 视图
+        try:
+            self.run_button.setEnabled(True)
+            self.task_LineEdit.setEnabled(True)
+            self.clear_textboxesBtn.setEnabled(True)
+            self._on_state_changed("IDLE")
+        except Exception as e:
+            print(f"[interrupt] UI restore failed: {e}")
+
+        # 5) 反馈
+        if interrupted:
+            self.update_chatgpt_ans_textBrowser("已中断当前任务（对话历史保留）。", is_user=False)
+        else:
+            self.update_chatgpt_ans_textBrowser("当前没有正在运行的任务。", is_user=False)
 
     def handle_streaming_chunk(self, chunk):
         """Handle streaming chunks from GPT and display them in real-time in output_text_edit"""
@@ -2247,8 +2363,8 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         return api_key
 
     def install_libraries_with_progress(self, libraries, force_reinstall=False):
-        self.progress_dialog = QProgressDialog("Installing required libraries...", None, 0, 0, self)
-        self.progress_dialog.setWindowTitle("Installing Dependencies")
+        self.progress_dialog = QProgressDialog("正在安装依赖包...", None, 0, 0, self)
+        self.progress_dialog.setWindowTitle("依赖安装")
         self.progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         self.progress_dialog.setCancelButton(None)
         self.progress_dialog.setMinimumDuration(0)
@@ -2261,13 +2377,13 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     def on_install_finished(self, success, message):
         self.progress_dialog.cancel()
         if success:
-            QMessageBox.information(self, "Success", message)
+            QMessageBox.information(self, "安装完成", "依赖安装成功。建议重启 QGIS 以确保所有更改生效。\n\n" + message)
         else:
-            QMessageBox.critical(self, "Error", message)
+            QMessageBox.critical(self, "安装失败", message)
 
     def install_pip_with_progress(self):
-        self.pip_progress = QProgressDialog("Installing pip...", None, 0, 0, self)
-        self.pip_progress.setWindowTitle("Installing pip")
+        self.pip_progress = QProgressDialog("正在安装 pip...", None, 0, 0, self)
+        self.pip_progress.setWindowTitle("安装 pip")
         self.pip_progress.setWindowModality(Qt.WindowModality.WindowModal)
         self.pip_progress.setCancelButton(None)
         self.pip_progress.setMinimumDuration(0)
@@ -2280,9 +2396,9 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
     def on_pip_install_finished(self, success, message):
         self.pip_progress.cancel()
         if success and check_pip_installed():
-            QMessageBox.information(self, "Pip Installed", message + "\n\nPlease restart QGIS before continuing.")
+            QMessageBox.information(self, "pip 已安装", message + "\n\n请重启 QGIS 后继续。")
         else:
-            QMessageBox.critical(self, "Installation Failed", message)
+            QMessageBox.critical(self, "安装失败", message)
 
     
     def on_detection_complete(self, result):
@@ -2589,10 +2705,10 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         task_breakdown = plan_dict.get("task_breakdown", "")
         selected_tools = plan_dict.get("selected_tools", [])
         summary = (
-            f"Analysis plan is ready:\n"
-            f"Task breakdown: {task_breakdown[:300]}...\n"
-            f"Selected tools: {selected_tools}\n\n"
-            f"Please confirm the plan or suggest modifications."
+            f"分析方案已就绪：\n"
+            f"任务分解：{task_breakdown[:300]}...\n"
+            f"已选工具：{selected_tools}\n\n"
+            f"请确认方案,或提出修改建议。"
         )
         self.update_chatgpt_ans_textBrowser(summary, is_user=False)
 
@@ -2608,15 +2724,15 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
         data_changes = result_dict.get("data_changes", {})
 
         if success:
-            summary = "Code execution succeeded!"
+            summary = "代码执行成功！"
             added = data_changes.get("added", [])
             if added:
                 names = [l.get("name", "?") for l in added]
-                summary += f"\nNew layers created: {names}"
+                summary += f"\n新增图层：{names}"
         else:
-            summary = f"Code execution failed: {error_msg}"
+            summary = f"代码执行失败：{error_msg}"
 
-        summary += "\n\nPlease select the next action."
+        summary += "\n\n请选择下一步操作。"
         self.update_chatgpt_ans_textBrowser(summary, is_user=False)
 
         # 显示执行输出
@@ -2649,7 +2765,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 existing = self.knowledge_manager._notes_path.read_text(encoding="utf-8")
             new_text = existing.rstrip() + "\n\n" + suggestion if existing.strip() else suggestion
             self.knowledge_manager.save_notes(new_text)
-            self.update_chatgpt_ans_textBrowser("Knowledge saved successfully.", is_user=False)
+            self.update_chatgpt_ans_textBrowser("知识已成功保存。", is_user=False)
             # 刷新 Notes 编辑器（而非仅刷新文档列表）
             try:
                 self.knowledge_notes_editor.blockSignals(True)
@@ -2658,7 +2774,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             except Exception:
                 pass
         except Exception as e:
-            self.update_chatgpt_ans_textBrowser(f"Failed to save knowledge: {e}", is_user=False)
+            self.update_chatgpt_ans_textBrowser(f"保存知识失败: {e}", is_user=False)
 
 
 # The classFactory function must be placed at the end of this file
@@ -2883,11 +2999,11 @@ class ScriptThread(QThread):
                             
                             if main_widget and hasattr(main_widget, 'format_tool_ids_as_links'):
                                 linked_tools = main_widget.format_tool_ids_as_links(tool_IDs)
-                                self.chatgpt_update.emit(f"Selected tool(s): {linked_tools}")
+                                self.chatgpt_update.emit(f"已选工具: {linked_tools}")
                             else:
-                                self.chatgpt_update.emit(f"Selected tool(s): {tool_IDs}")
+                                self.chatgpt_update.emit(f"已选工具: {tool_IDs}")
                         except:
-                            self.chatgpt_update.emit(f"Selected tool(s): {tool_IDs}")
+                            self.chatgpt_update.emit(f"已选工具: {tool_IDs}")
 
 
                 elif "TASK_BREAKDOWN" in line:

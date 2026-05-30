@@ -716,6 +716,8 @@ class AgentController(QObject):
             "selected_tools": selected_tools,
             "selected_tool_IDs": selected_tool_IDs_list,
         }, indent=2, ensure_ascii=False))
+        # 注:这条 add_message 是写给 LLM 看的上下文,保留英文键名以匹配
+        # 提示词中其他位置的 "Selected tool(s):" 字符串,避免 LLM 混淆。
         self.session.add_message(
             "assistant",
             f"Selected tools: {selected_tools}\n"
@@ -887,7 +889,7 @@ class AgentController(QObject):
 
         # ====== 步骤 7b: 代码审查（可选）======
         if self.is_review:
-            self.status_update.emit("Reviewing generated code...")
+            self.status_update.emit("正在审查生成的代码...")
 
             step_instruction = helper.build_code_review_instruction(
                 extracted_code=extracted_code,
@@ -920,7 +922,7 @@ class AgentController(QObject):
                 reviewed_code = helper.extract_code_from_str(review_str, task_explanation)
 
             final_code = reviewed_code
-            self.status_update.emit("Code review completed.")
+            self.status_update.emit("代码审查完成。")
         else:
             final_code = extracted_code
 
@@ -1183,14 +1185,22 @@ class AgentController(QObject):
         print(f"List of selected tool IDs: {selected_tool_IDs_list}")
         combined_documentation_str = '\n'.join(all_documentation)
 
-        # Prepend a strict parameter-name whitelist parsed from the TOML
-        # docs. This is the primary defense against parameter-key
-        # hallucinations (e.g. OVERLAY vs INTERSECT for lineintersections).
+        # 1) toml-derived whitelist 块(老的,基于静态文档)
         whitelist_block = helper.build_parameter_whitelist_block(
             selected_tool_IDs_list)
         if whitelist_block:
             combined_documentation_str = (
                 whitelist_block + "\n" + combined_documentation_str)
+
+        # 2) 运行时真实签名块(新的,直接问当前 QGIS)。
+        #    这是事实之源 —— toml 可能滞后于 QGIS 版本,LLM 训练数据也可能过期,
+        #    但 QgsApplication.processingRegistry() 报出来的永远是当前 build 的真相。
+        #    放在最前面,优先级最高。
+        runtime_block = helper.build_runtime_signature_block(
+            selected_tool_IDs_list)
+        if runtime_block:
+            combined_documentation_str = (
+                runtime_block + "\n" + combined_documentation_str)
 
         print(combined_documentation_str)
 
@@ -1301,8 +1311,8 @@ class AgentController(QObject):
         if not is_valid:
             print(f"[PlanRevision] REJECTED — invalid plan schema: {err}")
             self.chat_response.emit(
-                f"Plan revision rejected: {err}. "
-                f"Please describe the change and I'll produce a valid plan."
+                f"方案修订被拒绝：{err}。"
+                f"请描述您希望的修改,我会生成一份合规的方案。"
             )
             # 不改变状态，不进入 PLAN_READY
             return
