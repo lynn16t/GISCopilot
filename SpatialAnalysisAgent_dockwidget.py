@@ -1185,7 +1185,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             encoded_content = urllib.parse.quote(thoughts_content)
 
             # Create a clickable link
-            link = f'<a href="ai-thoughts:{encoded_content}" style="color: blue; text-decoration: underline;">task breakdown</a>'
+            link = f'<a href="ai-thoughts:{encoded_content}" style="color: blue; text-decoration: underline;">任务分解</a>'
             return link
 
         except Exception as e:
@@ -1200,7 +1200,7 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             data_encoded_content = urllib.parse.quote(data_content)
 
             # Create a clickable link
-            data_link = f'<a href="data-attributes:{data_encoded_content}" style="color: blue; text-decoration: underline;">data overview</a>'
+            data_link = f'<a href="data-attributes:{data_encoded_content}" style="color: blue; text-decoration: underline;">数据概览</a>'
             return data_link
 
         except Exception as e:
@@ -2029,12 +2029,13 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
                 self.task_breakdown_lines = [task_breakdown_line]
 
             elif "data overview:" in line:
-                    # Extract the data directly from this line and create the link immediately
-                    data_content = line.split("data overview: ")[1].strip()
-                    # Create clickable "data overview" link instead of showing full text
-                    data_link = self.format_data_attributes_link(data_content)
-                    self.update_chatgpt_ans_textBrowser(f"分析结果: {data_link}")
-                    # return  # Don't add to output_text_edit
+                # 进入累加模式:把"data overview: ..."这行 + 后面的 attributes_json
+                # 全部收集起来,直到遇到 "__" 终止符,再合并成一个可点击的链接。
+                # AgentController 在 print(attributes_json) 之后会 print("\n__")。
+                self.is_data_attributes = True
+                first_line = line.split("data overview: ", 1)[1].strip() if "data overview: " in line else clean_line
+                self.data_attributes_lines = ["data overview:", first_line]
+                return
 
             elif "AI IS SELECTING THE APPROPRIATE TOOL(S) ..." in line:
                 self.update_chatgpt_ans_textBrowser("正在选择合适的工具...", is_user=False)
@@ -2701,15 +2702,53 @@ class SpatialAnalysisAgentDockWidget(QtWidgets.QDockWidget, FORM_CLASS):
             self.update_graph(html_path)
 
     def _on_agent_plan_ready(self, plan_dict):
-        """AgentController 分析完成，方案已就绪"""
-        task_breakdown = plan_dict.get("task_breakdown", "")
-        selected_tools = plan_dict.get("selected_tools", [])
-        summary = (
-            f"分析方案已就绪：\n"
-            f"任务分解：{task_breakdown[:300]}...\n"
-            f"已选工具：{selected_tools}\n\n"
-            f"请确认方案,或提出修改建议。"
-        )
+        """AgentController 分析完成，方案已就绪。
+
+        显示策略:
+        - 只展示"任务首段"(到 "Execute the following tasks:" 或第一个空行
+          之前),后跟 task breakdown 超链接,不再硬切 300 字符。
+        - 已选工具空列表不渲染。
+        - 工具列表渲染成可点击链接(沿用既有 format_tool_ids_as_links)。
+        """
+        task_breakdown = plan_dict.get("task_breakdown", "") or ""
+        selected_tools = plan_dict.get("selected_tools", []) or []
+
+        # 提取首段简介:优先按 "Execute the following tasks:" 标记切,
+        # 否则按第一个空行切,再不行按句号切。
+        intro = ""
+        marker = "Execute the following tasks:"
+        if marker in task_breakdown:
+            intro = task_breakdown.split(marker, 1)[0].strip() + " " + marker
+        else:
+            first_para = task_breakdown.split("\n\n", 1)[0].strip()
+            if len(first_para) <= 400:
+                intro = first_para
+            else:
+                # 退而求其次:切到第一个 ". "
+                dot = first_para.find(". ")
+                intro = first_para[:dot + 1] if 0 < dot < 400 else first_para[:400] + "…"
+
+        thoughts_link = self.format_ai_thoughts_link(task_breakdown) if task_breakdown else ""
+
+        parts = ["分析方案已就绪："]
+        if intro:
+            parts.append(f"任务简介：{intro}")
+        if thoughts_link:
+            parts.append(f"完整任务分解：{thoughts_link}")
+
+        if selected_tools:
+            # 把 ['a','b'] 渲染成可点击链接
+            try:
+                linked_tools = self.format_tool_ids_as_links(str(list(selected_tools)))
+                parts.append(f"已选工具：{linked_tools}")
+            except Exception:
+                parts.append(f"已选工具：{list(selected_tools)}")
+        # 工具空列表:整行省略,不显示 "已选工具：[]"
+
+        parts.append("")
+        parts.append("请确认方案,或提出修改建议。")
+        summary = "\n".join(parts)
+
         self.update_chatgpt_ans_textBrowser(summary, is_user=False)
 
         # 重新启用控件（按钮组由 _on_state_changed 管理）

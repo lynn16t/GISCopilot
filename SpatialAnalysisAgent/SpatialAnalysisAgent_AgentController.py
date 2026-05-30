@@ -585,6 +585,9 @@ class AgentController(QObject):
             self.session.set_data_overview(str(data_overview))
             print(f"data overview: {data_overview}")
             print(attributes_json)
+            # 终止符:让 dockwidget 的 is_data_attributes 累加器知道这段输出结束了,
+            # 可以把 data overview + attributes_json 合并成一个可点击的"data overview"链接。
+            print("\n__")
         else:
             # 数据未变，复用缓存（session.data_overview 已是 list）
             data_overview = self.session.data_overview
